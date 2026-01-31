@@ -10,6 +10,8 @@ from run import (
     extract_and_store_links,
     extract_links,
     init_db,
+    normalize_tags,
+    ensure_link_columns,
     should_skip_url,
     slugify_filename,
     write_issue_note,
@@ -20,6 +22,14 @@ def test_canonicalize_url_strips_tracking_and_normalizes():
     url = "https://Example.com/path/?utm_source=a&ref=b&x=1"
     canon = canonicalize_url(url)
     assert canon == "https://example.com/path?x=1"
+
+
+def test_canonicalize_url_edge_cases():
+    assert canonicalize_url("https://example.com/path/") == "https://example.com/path"
+    assert canonicalize_url("https://example.com:443/path") == "https://example.com/path"
+    assert canonicalize_url("http://example.com:80/path") == "http://example.com/path"
+    canon = canonicalize_url("https://example.com/path?b=2&a=1")
+    assert canon == "https://example.com/path?a=1&b=2"
 
 
 def test_should_skip_url_rules():
@@ -41,6 +51,11 @@ def test_extract_links_html_and_text():
 def test_slugify_filename_basic():
     assert slugify_filename("Hello, World!") == "Hello World"
     assert slugify_filename("") == "Newsletter"
+
+
+def test_normalize_tags_edge_cases():
+    assert normalize_tags(None) == []
+    assert normalize_tags(["", "  ", "alpha", "Alpha", "alpha"]) == ["Alpha", "alpha"]
 
 
 def test_extract_and_store_links_dedupes_and_inserts():
@@ -92,6 +107,34 @@ def test_write_issue_note_creates_file_and_contents():
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_write_issue_note_groups_by_domain():
+    msg = GmailMessage(
+        message_id="msg-3",
+        internal_date=1700000000000,
+        subject="Domain Test",
+        from_email="sender@example.com",
+        label_ids="[]",
+        html=None,
+        text=None,
+    )
+    links = [
+        ("https://b.com/x", "B"),
+        ("https://a.com/y", "A"),
+    ]
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".test_tmp"))
+    try:
+        os.makedirs(base, exist_ok=True)
+        vault = os.path.join(base, "vault")
+        path = write_issue_note(vault, os.path.join("Newsletters", "Issues"), msg, links)
+        assert path is not None
+        content = open(path, "r", encoding="utf-8").read()
+        assert "## a.com" in content
+        assert "## b.com" in content
+        assert content.index("## a.com") < content.index("## b.com")
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_build_article_note_content_is_deterministic():
     content = build_article_note_content(
         title="Test Article",
@@ -110,3 +153,45 @@ def test_build_article_note_content_is_deterministic():
     assert "tags: [\"alpha\", \"beta\"]" in content
     assert content.index("- Second") < content.index("- First")
     assert "# Why it matters" in content
+
+
+def test_build_article_note_content_no_optional_sections():
+    content = build_article_note_content(
+        title="Test Article",
+        url="https://example.com/a",
+        date_iso="2026-01-30",
+        source="example.com",
+        category="Dev Tools",
+        tags=[],
+        summary="Short summary.",
+        bullets=[],
+        why_it_matters=None,
+    )
+    assert "# Key takeaways" in content
+    assert "\n-\n" in content
+    assert "# Why it matters" not in content
+
+
+def test_ensure_link_columns_idempotent():
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """
+        CREATE TABLE links (
+            url_canonical TEXT PRIMARY KEY,
+            first_seen_message_id TEXT,
+            domain TEXT,
+            title TEXT,
+            discovered_at INTEGER,
+            processed_at INTEGER,
+            fetch_status TEXT,
+            content_hash TEXT
+        )
+        """
+    )
+    ensure_link_columns(conn)
+    ensure_link_columns(conn)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(links)").fetchall()}
+    assert "summary" in cols
+    assert "category" in cols
+    assert "tags" in cols
+    assert "note_path" in cols
