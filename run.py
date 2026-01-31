@@ -477,15 +477,79 @@ def mark_link_processed(
     status: str,
     title: Optional[str],
     content_hash: Optional[str],
+    summary: Optional[str] = None,
+    category: Optional[str] = None,
+    tags: Optional[Iterable[str]] = None,
+    note_path: Optional[str] = None,
 ) -> None:
+    tags_json = json.dumps(normalize_tags(tags)) if tags is not None else None
     conn.execute(
         """
         UPDATE links
         SET processed_at = ?, fetch_status = ?, title = ?, content_hash = ?
+            , summary = COALESCE(?, summary)
+            , category = COALESCE(?, category)
+            , tags = COALESCE(?, tags)
+            , note_path = COALESCE(?, note_path)
         WHERE url_canonical = ?
         """,
-        (int(time.time()), status, title, content_hash, url),
+        (
+            int(time.time()),
+            status,
+            title,
+            content_hash,
+            summary,
+            category,
+            tags_json,
+            note_path,
+            url,
+        ),
     )
+
+
+def summarize_text_stub(text: str, max_sentences: int = 2) -> Tuple[str, List[str]]:
+    if not text:
+        return "", []
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    summary = " ".join(sentences[:max_sentences]).strip()
+    bullets = [s.strip() for s in sentences[: min(5, len(sentences))] if s.strip()]
+    return summary, bullets
+
+
+def write_article_note(
+    vault_path: str,
+    articles_subdir: str,
+    *,
+    title: str,
+    url: str,
+    date_iso: str,
+    source: str,
+    category: str,
+    tags: Optional[Iterable[str]],
+    summary: str,
+    bullets: Optional[Iterable[str]],
+    why_it_matters: Optional[str] = None,
+) -> str:
+    year = date_iso[:4]
+    folder = os.path.join(vault_path, articles_subdir, category, year)
+    os.makedirs(folder, exist_ok=True)
+    filename = f"{slugify_filename(title)}.md"
+    path = os.path.join(folder, filename)
+    if not os.path.exists(path):
+        content = build_article_note_content(
+            title=title,
+            url=url,
+            date_iso=date_iso,
+            source=source,
+            category=category,
+            tags=tags,
+            summary=summary,
+            bullets=bullets,
+            why_it_matters=why_it_matters,
+        )
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+    return path
 
 
 def ingest(
@@ -538,47 +602,130 @@ def ingest(
         conn.commit()
 
 
+def process_links(
+    db_path: str,
+    vault_path: str,
+    articles_subdir: str,
+    max_links: int,
+) -> None:
+    if not vault_path:
+        raise RuntimeError("Vault path is required for process-links.")
+    conn = init_db(db_path)
+    urls = get_unprocessed_links(conn, max_links)
+    if not urls:
+        print("No unprocessed links.")
+        return
+    today = time.strftime("%Y-%m-%d")
+    for url in urls:
+        status, title, text = fetch_article(url)
+        content_hash = hash_text(text) if text else None
+        domain = urlsplit(url).netloc
+        if status == "ok" and text:
+            summary, bullets = summarize_text_stub(text)
+            note_title = title or domain or "Article"
+            category = "Other"
+            note_path = write_article_note(
+                vault_path,
+                articles_subdir,
+                title=note_title,
+                url=url,
+                date_iso=today,
+                source=domain or "unknown",
+                category=category,
+                tags=[],
+                summary=summary,
+                bullets=bullets,
+            )
+            mark_link_processed(
+                conn,
+                url,
+                status,
+                title,
+                content_hash,
+                summary=summary,
+                category=category,
+                tags=[],
+                note_path=note_path,
+            )
+        else:
+            mark_link_processed(conn, url, status, title, content_hash)
+    conn.commit()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Newsletter Gmail ingestion.")
-    parser.add_argument("--label", default="Newsletters", help="Gmail label name")
-    parser.add_argument("--max", type=int, default=20, help="Max messages to fetch")
-    parser.add_argument("--since-days", type=int, default=7, help="Only fetch recent messages")
-    parser.add_argument("--db", default=DEFAULT_DB, help="SQLite DB path")
-    parser.add_argument("--credentials", default="credentials.json", help="OAuth credentials")
-    parser.add_argument("--token", default="token.json", help="OAuth token")
-    parser.add_argument(
+    subparsers = parser.add_subparsers(dest="command")
+
+    ingest_parser = subparsers.add_parser("ingest", help="Ingest Gmail messages")
+    ingest_parser.add_argument("--label", default="Newsletters", help="Gmail label name")
+    ingest_parser.add_argument("--max", type=int, default=20, help="Max messages to fetch")
+    ingest_parser.add_argument(
+        "--since-days", type=int, default=7, help="Only fetch recent messages"
+    )
+    ingest_parser.add_argument("--db", default=DEFAULT_DB, help="SQLite DB path")
+    ingest_parser.add_argument("--credentials", default="credentials.json", help="OAuth credentials")
+    ingest_parser.add_argument("--token", default="token.json", help="OAuth token")
+    ingest_parser.add_argument(
         "--vault",
         default="",
         help="Path to Obsidian vault (issue notes written under this folder)",
     )
-    parser.add_argument(
+    ingest_parser.add_argument(
         "--issues-dir",
         default=os.path.join("Newsletters", "Issues"),
         help="Subdirectory inside the vault for issue notes",
     )
-    parser.add_argument(
+    ingest_parser.add_argument(
         "--fetch-articles",
         action="store_true",
         help="Fetch article pages and store title/hash",
     )
-    parser.add_argument("--max-articles", type=int, default=50, help="Max links to fetch")
+    ingest_parser.add_argument("--max-articles", type=int, default=50, help="Max links to fetch")
+
+    process_parser = subparsers.add_parser(
+        "process-links", help="Fetch and process unprocessed article links"
+    )
+    process_parser.add_argument("--db", default=DEFAULT_DB, help="SQLite DB path")
+    process_parser.add_argument(
+        "--vault",
+        default="",
+        help="Path to Obsidian vault (article notes written under this folder)",
+    )
+    process_parser.add_argument(
+        "--articles-dir",
+        default=os.path.join("Newsletters", "Articles"),
+        help="Subdirectory inside the vault for article notes",
+    )
+    process_parser.add_argument("--max-links", type=int, default=25, help="Max links to fetch")
+
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
-    ingest(
-        label=args.label,
-        max_results=args.max,
-        since_days=args.since_days,
-        db_path=args.db,
-        credentials_path=args.credentials,
-        token_path=args.token,
-        fetch_articles_flag=args.fetch_articles,
-        max_articles=args.max_articles,
-        vault_path=args.vault,
-        issues_subdir=args.issues_dir,
-    )
+    if args.command in (None, "ingest"):
+        ingest(
+            label=args.label,
+            max_results=args.max,
+            since_days=args.since_days,
+            db_path=args.db,
+            credentials_path=args.credentials,
+            token_path=args.token,
+            fetch_articles_flag=args.fetch_articles,
+            max_articles=args.max_articles,
+            vault_path=args.vault,
+            issues_subdir=args.issues_dir,
+        )
+        return
+    if args.command == "process-links":
+        process_links(
+            db_path=args.db,
+            vault_path=args.vault,
+            articles_subdir=args.articles_dir,
+            max_links=args.max_links,
+        )
+        return
+    raise SystemExit("Unknown command")
 
 
 if __name__ == "__main__":

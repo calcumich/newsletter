@@ -10,10 +10,14 @@ from run import (
     extract_and_store_links,
     extract_links,
     init_db,
+    mark_link_processed,
     normalize_tags,
+    process_links,
     ensure_link_columns,
     should_skip_url,
     slugify_filename,
+    summarize_text_stub,
+    write_article_note,
     write_issue_note,
 )
 
@@ -195,3 +199,100 @@ def test_ensure_link_columns_idempotent():
     assert "category" in cols
     assert "tags" in cols
     assert "note_path" in cols
+
+
+def test_summarize_text_stub():
+    text = "First sentence. Second sentence? Third sentence!"
+    summary, bullets = summarize_text_stub(text, max_sentences=2)
+    assert summary == "First sentence. Second sentence?"
+    assert bullets[0] == "First sentence."
+    assert bullets[1] == "Second sentence?"
+
+
+def test_write_article_note_creates_file():
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".test_tmp"))
+    try:
+        os.makedirs(base, exist_ok=True)
+        vault = os.path.join(base, "vault")
+        path = write_article_note(
+            vault,
+            os.path.join("Newsletters", "Articles"),
+            title="A Test Article",
+            url="https://example.com/a",
+            date_iso="2026-01-30",
+            source="example.com",
+            category="Other",
+            tags=["alpha", "beta"],
+            summary="Short summary.",
+            bullets=["One", "Two"],
+            why_it_matters=None,
+        )
+        assert os.path.exists(path)
+        content = open(path, "r", encoding="utf-8").read()
+        assert 'type: article' in content
+        assert 'title: "A Test Article"' in content
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_mark_link_processed_updates_optional_fields():
+    conn = init_db(":memory:")
+    conn.execute(
+        """
+        INSERT INTO links (url_canonical, first_seen_message_id, domain, discovered_at)
+        VALUES ('https://example.com/a', 'msg', 'example.com', 1)
+        """
+    )
+    mark_link_processed(
+        conn,
+        "https://example.com/a",
+        "ok",
+        "Title",
+        "hash",
+        summary="Summary",
+        category="Other",
+        tags=["b", "a"],
+        note_path="vault/path.md",
+    )
+    row = conn.execute(
+        "SELECT summary, category, tags, note_path FROM links WHERE url_canonical = ?",
+        ("https://example.com/a",),
+    ).fetchone()
+    assert row == ("Summary", "Other", '["a", "b"]', "vault/path.md")
+
+
+def test_process_links_writes_notes_and_updates_db(monkeypatch):
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".test_tmp"))
+    try:
+        os.makedirs(base, exist_ok=True)
+        vault = os.path.join(base, "vault")
+        db_path = os.path.join(base, "test.db")
+        conn = init_db(db_path)
+        conn.execute(
+            """
+            INSERT INTO links (url_canonical, first_seen_message_id, domain, discovered_at)
+            VALUES ('https://example.com/a', 'msg', 'example.com', 1)
+            """
+        )
+        conn.commit()
+
+        def fake_fetch_article(_url):
+            return "ok", "Example Title", "First sentence. Second sentence."
+
+        monkeypatch.setattr("run.fetch_article", fake_fetch_article)
+        process_links(
+            db_path=db_path,
+            vault_path=vault,
+            articles_subdir=os.path.join("Newsletters", "Articles"),
+            max_links=10,
+        )
+        row = conn.execute(
+            "SELECT fetch_status, summary, note_path FROM links WHERE url_canonical = ?",
+            ("https://example.com/a",),
+        ).fetchone()
+        assert row[0] == "ok"
+        assert row[1]
+        assert row[2]
+        assert os.path.exists(row[2])
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
