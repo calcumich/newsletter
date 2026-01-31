@@ -10,14 +10,18 @@ from run import (
     extract_and_store_links,
     extract_links,
     extract_main_text,
+    extract_output_text,
     init_db,
     mark_link_processed,
     normalize_tags,
+    make_obsidian_link,
     process_links,
     ensure_link_columns,
     should_skip_url,
     slugify_filename,
     summarize_text_stub,
+    summarize_text,
+    update_issue_note_with_article_link,
     write_article_note,
     write_issue_note,
 )
@@ -177,6 +181,52 @@ def test_build_article_note_content_no_optional_sections():
     assert "# Why it matters" not in content
 
 
+def test_make_obsidian_link():
+    link = make_obsidian_link(
+        "C:\\vault\\Newsletters\\Articles\\Other\\2026\\Article.md",
+        "C:\\vault",
+        "Title",
+    )
+    assert link == "[[Newsletters/Articles/Other/2026/Article|Title]]"
+
+
+def test_update_issue_note_with_article_link():
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".test_tmp"))
+    try:
+        os.makedirs(base, exist_ok=True)
+        vault = os.path.join(base, "vault")
+        issue_path = os.path.join(vault, "Newsletters", "Issues", "2026", "01")
+        os.makedirs(issue_path, exist_ok=True)
+        issue_file = os.path.join(issue_path, "issue.md")
+        with open(issue_file, "w", encoding="utf-8") as f:
+            f.write("# Links\n")
+        article_path = os.path.join(
+            vault, "Newsletters", "Articles", "Other", "2026", "article.md"
+        )
+        os.makedirs(os.path.dirname(article_path), exist_ok=True)
+        with open(article_path, "w", encoding="utf-8") as f:
+            f.write("content")
+        update_issue_note_with_article_link(
+            issue_file,
+            article_path,
+            vault,
+            "Article Title",
+        )
+        content = open(issue_file, "r", encoding="utf-8").read()
+        assert "## Articles" in content
+        assert "Article Title" in content
+        update_issue_note_with_article_link(
+            issue_file,
+            article_path,
+            vault,
+            "Article Title",
+        )
+        content_again = open(issue_file, "r", encoding="utf-8").read()
+        assert content_again.count("Article Title") == 1
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_ensure_link_columns_idempotent():
     conn = sqlite3.connect(":memory:")
     conn.execute(
@@ -208,6 +258,32 @@ def test_summarize_text_stub():
     assert summary == "First sentence. Second sentence?"
     assert bullets[0] == "First sentence."
     assert bullets[1] == "Second sentence?"
+
+
+def test_extract_output_text():
+    response = {
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {"type": "output_text", "text": "{\"summary\":\"x\"}"},
+                ],
+            }
+        ]
+    }
+    assert extract_output_text(response) == '{"summary":"x"}'
+
+
+def test_summarize_text_falls_back_without_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    result = summarize_text(
+        "First sentence. Second sentence.",
+        title="Title",
+        url="https://example.com",
+        domain="example.com",
+    )
+    assert result["summary"]
+    assert result["category"] == "Other"
 
 
 def test_extract_main_text_basic():

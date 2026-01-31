@@ -16,3 +16,8 @@ python -m pytest
 
 Notes:
 - Tests create a temporary `.test_tmp` directory in the repo (gitignored).
+
+## Optional LLM Summarizer
+
+Set `OPENAI_API_KEY` to enable OpenAI-backed summaries. Optionally set `OPENAI_MODEL`
+(defaults to `gpt-4o-mini`). If no key is set, a local stub summarizer is used.

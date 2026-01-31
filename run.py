@@ -122,7 +122,8 @@ def init_db(db_path: str) -> sqlite3.Connection:
             from_email TEXT,
             label_ids TEXT,
             processed_at INTEGER,
-            content_hash TEXT
+            content_hash TEXT,
+            issue_note_path TEXT
         )
         """
     )
@@ -145,8 +146,21 @@ def init_db(db_path: str) -> sqlite3.Connection:
         """
     )
     ensure_link_columns(conn)
+    ensure_gmail_columns(conn)
     conn.commit()
     return conn
+
+
+def ensure_gmail_columns(conn: sqlite3.Connection) -> None:
+    required = {
+        "issue_note_path": "TEXT",
+    }
+    existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(gmail_messages)").fetchall()
+    }
+    for column, col_type in required.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE gmail_messages ADD COLUMN {column} {col_type}")
 
 
 def ensure_link_columns(conn: sqlite3.Connection) -> None:
@@ -358,6 +372,19 @@ def store_message(conn: sqlite3.Connection, msg: GmailMessage) -> None:
     )
 
 
+def update_issue_note_path(
+    conn: sqlite3.Connection,
+    message_id: str,
+    issue_note_path: Optional[str],
+) -> None:
+    if not issue_note_path:
+        return
+    conn.execute(
+        "UPDATE gmail_messages SET issue_note_path = ? WHERE message_id = ?",
+        (issue_note_path, message_id),
+    )
+
+
 def store_link(
     conn: sqlite3.Connection,
     url: str,
@@ -448,6 +475,34 @@ def write_issue_note(
                 f.write(f"- [{label}]({url})\n")
             f.write("\n")
     return path
+
+
+def make_obsidian_link(article_path: str, vault_path: str, title: str) -> str:
+    rel = os.path.relpath(article_path, vault_path).replace("\\", "/")
+    if rel.lower().endswith(".md"):
+        rel = rel[:-3]
+    return f"[[{rel}|{title}]]"
+
+
+def update_issue_note_with_article_link(
+    issue_note_path: str,
+    article_path: str,
+    vault_path: str,
+    title: str,
+) -> None:
+    if not os.path.exists(issue_note_path):
+        return
+    link = make_obsidian_link(article_path, vault_path, title)
+    with open(issue_note_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    if link in content:
+        return
+    section_header = "\n## Articles\n"
+    if "## Articles" not in content:
+        content = content.rstrip() + section_header
+    content = content.rstrip() + f"\n- {link}\n"
+    with open(issue_note_path, "w", encoding="utf-8") as f:
+        f.write(content)
 
 
 def get_unprocessed_links(conn: sqlite3.Connection, limit: int) -> List[str]:
@@ -543,6 +598,124 @@ def summarize_text_stub(text: str, max_sentences: int = 2) -> Tuple[str, List[st
     return summary, bullets
 
 
+def extract_output_text(response_json: dict) -> str:
+    output_items = response_json.get("output", [])
+    parts: List[str] = []
+    for item in output_items:
+        if item.get("type") != "message":
+            continue
+        for content in item.get("content", []):
+            if content.get("type") == "output_text":
+                text = content.get("text")
+                if text:
+                    parts.append(text)
+    return "\n".join(parts).strip()
+
+
+def summarize_text_openai(
+    text: str,
+    *,
+    title: Optional[str],
+    url: str,
+    domain: str,
+    model: str,
+) -> Optional[dict]:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "summary": {"type": "string"},
+            "bullets": {"type": "array", "items": {"type": "string"}},
+            "category": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "confidence": {"type": "number"},
+            "paywall_or_blocked": {"type": "boolean"},
+        },
+        "required": [
+            "summary",
+            "bullets",
+            "category",
+            "tags",
+            "confidence",
+            "paywall_or_blocked",
+        ],
+    }
+    prompt = (
+        "Summarize the following article content. "
+        "Return concise summary, 3-6 bullet takeaways, category from a small tech set, "
+        "3-8 tags, confidence 0-1, and whether paywalled/blocked."
+    )
+    payload = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": prompt},
+            {
+                "role": "user",
+                "content": f"Title: {title or ''}\nURL: {url}\nDomain: {domain}\n\n{text}",
+            },
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "article_summary",
+                "strict": True,
+                "schema": schema,
+            }
+        },
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers=headers,
+            data=json.dumps(payload),
+            timeout=30,
+        )
+    except requests.RequestException:
+        return None
+    if resp.status_code >= 400:
+        return None
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    raw_text = extract_output_text(data)
+    if not raw_text:
+        return None
+    try:
+        return json.loads(raw_text)
+    except json.JSONDecodeError:
+        return None
+
+
+def summarize_text(
+    text: str,
+    *,
+    title: Optional[str],
+    url: str,
+    domain: str,
+) -> dict:
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    result = summarize_text_openai(text, title=title, url=url, domain=domain, model=model)
+    if result:
+        return result
+    summary, bullets = summarize_text_stub(text)
+    return {
+        "summary": summary,
+        "bullets": bullets,
+        "category": "Other",
+        "tags": [],
+        "confidence": 0.3,
+        "paywall_or_blocked": False,
+    }
+
+
 def write_article_note(
     vault_path: str,
     articles_subdir: str,
@@ -617,7 +790,8 @@ def ingest(
         msg = get_message(service, message_id)
         store_message(conn, msg)
         links = extract_and_store_links(conn, msg)
-        write_issue_note(vault_path or "", issues_subdir, msg, links)
+        issue_path = write_issue_note(vault_path or "", issues_subdir, msg, links)
+        update_issue_note_path(conn, msg.message_id, issue_path)
     conn.commit()
 
     if fetch_articles_flag:
@@ -648,9 +822,17 @@ def process_links(
         content_hash = hash_text(text) if text else None
         domain = urlsplit(url).netloc
         if status == "ok" and text:
-            summary, bullets = summarize_text_stub(text)
+            summary_data = summarize_text(
+                text,
+                title=title,
+                url=url,
+                domain=domain,
+            )
+            summary = summary_data.get("summary", "")
+            bullets = summary_data.get("bullets", [])
+            category = summary_data.get("category", "Other")
+            tags = summary_data.get("tags", [])
             note_title = title or domain or "Article"
-            category = "Other"
             note_path = write_article_note(
                 vault_path,
                 articles_subdir,
@@ -659,7 +841,7 @@ def process_links(
                 date_iso=today,
                 source=domain or "unknown",
                 category=category,
-                tags=[],
+                tags=tags,
                 summary=summary,
                 bullets=bullets,
             )
@@ -671,9 +853,26 @@ def process_links(
                 content_hash,
                 summary=summary,
                 category=category,
-                tags=[],
+                tags=tags,
                 note_path=note_path,
             )
+            row = conn.execute(
+                """
+                SELECT gm.issue_note_path
+                FROM links l
+                JOIN gmail_messages gm
+                  ON gm.message_id = l.first_seen_message_id
+                WHERE l.url_canonical = ?
+                """,
+                (url,),
+            ).fetchone()
+            if row and row[0]:
+                update_issue_note_with_article_link(
+                    row[0],
+                    note_path,
+                    vault_path,
+                    note_title,
+                )
         else:
             mark_link_processed(conn, url, status, title, content_hash)
     conn.commit()
