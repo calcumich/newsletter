@@ -929,7 +929,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    if args.command in (None, "ingest"):
+    if args.command is None:
+        # Default to ingest subcommand when none is provided.
+        args = build_parser().parse_args(["ingest", *sys.argv[1:]])
+    if args.command == "ingest":
         ingest(
             label=args.label,
             max_results=args.max,

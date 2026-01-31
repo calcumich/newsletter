@@ -2,6 +2,23 @@
 
 Minimal Gmail ingestion pipeline that extracts newsletter links and (optionally) fetches article pages.
 
+## Quickstart
+
+Create a local vault in this repo (gitignored):
+```bash
+mkdir -p vault
+```
+
+Ingest recent newsletters (creates `newsletter.db`):
+```bash
+python run.py ingest --label "Tech Newsletters" --since-days 7 --max 20 --db newsletter.db --vault "C:\\Path\\To\\Repo\\vault"
+```
+
+Fetch article pages and write article notes:
+```bash
+python run.py process-links --db newsletter.db --vault "C:\\Path\\To\\Repo\\vault" --max-links 25
+```
+
 ## Tests
 
 Install deps:
