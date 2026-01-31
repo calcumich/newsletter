@@ -204,6 +204,18 @@ Deliverable:
 Deliverable:
 - Issue notes include linked summarized article notes.
 
+#### Milestone 2 implementation notes (minimal)
+- Article note frontmatter fields:
+  - type, source, title, date, url, category, tags
+- Article note body sections:
+  - Summary
+  - Key takeaways (bullets)
+  - Why it matters (optional)
+- Extraction: prefer readability-lxml (fallback to bs4 full-text if needed).
+- Summarization: pluggable backend with a no-LLM stub returning fixed schema.
+- CLI: add `process-links` to batch unprocessed URLs and update Issue notes.
+
+
 ### Milestone 3 — Robustness + quality
 - Caching:
   - skip URLs already processed (unless refresh enabled)
