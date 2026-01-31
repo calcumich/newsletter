@@ -9,6 +9,7 @@ from run import (
     canonicalize_url,
     extract_and_store_links,
     extract_links,
+    extract_main_text,
     init_db,
     mark_link_processed,
     normalize_tags,
@@ -207,6 +208,13 @@ def test_summarize_text_stub():
     assert summary == "First sentence. Second sentence?"
     assert bullets[0] == "First sentence."
     assert bullets[1] == "Second sentence?"
+
+
+def test_extract_main_text_basic():
+    html = "<html><head><title>My Title</title></head><body><p>Hello world.</p></body></html>"
+    title, text = extract_main_text(html)
+    assert title == "My Title"
+    assert "Hello world." in (text or "")
 
 
 def test_write_article_note_creates_file():

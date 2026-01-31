@@ -20,6 +20,16 @@ except Exception:  # pragma: no cover - optional import
     BeautifulSoup = None
 
 try:
+    import trafilatura
+except Exception:  # pragma: no cover - optional import
+    trafilatura = None
+
+try:
+    from readability import Document
+except Exception:  # pragma: no cover - optional import
+    Document = None
+
+try:
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
@@ -459,16 +469,33 @@ def fetch_article(url: str, timeout: int = 15) -> Tuple[str, Optional[str], Opti
     content_type = resp.headers.get("content-type", "").lower()
     if "text/html" not in content_type:
         return "non_html", None, None
+    title, text_content = extract_main_text(resp.text)
+    return "ok", title, text_content
+
+
+def extract_main_text(html: str) -> Tuple[Optional[str], Optional[str]]:
     title = None
     text_content = None
+    if trafilatura is not None:
+        extracted = trafilatura.extract(html)
+        if extracted:
+            text_content = extracted.strip()
+    if text_content is None and Document is not None:
+        doc = Document(html)
+        title = doc.short_title()
+        content_html = doc.summary()
+        if BeautifulSoup is not None:
+            soup = BeautifulSoup(content_html, "lxml" if "lxml" in sys.modules else "html.parser")
+            text_content = soup.get_text(" ", strip=True)
     if BeautifulSoup is not None:
-        soup = BeautifulSoup(resp.text, "lxml" if "lxml" in sys.modules else "html.parser")
-        if soup.title and soup.title.text:
+        soup = BeautifulSoup(html, "lxml" if "lxml" in sys.modules else "html.parser")
+        if not title and soup.title and soup.title.text:
             title = soup.title.text.strip()
-        for tag in soup(["script", "style", "noscript"]):
-            tag.decompose()
-        text_content = soup.get_text(" ", strip=True)
-    return "ok", title, text_content
+        if text_content is None:
+            for tag in soup(["script", "style", "noscript"]):
+                tag.decompose()
+            text_content = soup.get_text(" ", strip=True)
+    return title, text_content
 
 
 def mark_link_processed(
