@@ -5,6 +5,7 @@ import shutil
 
 from run import (
     GmailMessage,
+    build_article_note_content,
     canonicalize_url,
     extract_and_store_links,
     extract_links,
@@ -89,3 +90,23 @@ def test_write_issue_note_creates_file_and_contents():
         assert "- [Alpha](https://example.com/a)" in text
     finally:
         shutil.rmtree(base, ignore_errors=True)
+
+
+def test_build_article_note_content_is_deterministic():
+    content = build_article_note_content(
+        title="Test Article",
+        url="https://example.com/a",
+        date_iso="2026-01-30",
+        source="example.com",
+        category="Dev Tools",
+        tags=["beta", "alpha", "alpha"],
+        summary="Short summary.",
+        bullets=["Second", "First"],
+        why_it_matters="Because it is useful.",
+    )
+    assert 'type: article' in content
+    assert 'title: "Test Article"' in content
+    assert 'url: "https://example.com/a"' in content
+    assert "tags: [\"alpha\", \"beta\"]" in content
+    assert content.index("- Second") < content.index("- First")
+    assert "# Why it matters" in content

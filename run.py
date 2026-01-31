@@ -126,12 +126,81 @@ def init_db(db_path: str) -> sqlite3.Connection:
             discovered_at INTEGER,
             processed_at INTEGER,
             fetch_status TEXT,
-            content_hash TEXT
+            content_hash TEXT,
+            summary TEXT,
+            category TEXT,
+            tags TEXT,
+            note_path TEXT
         )
         """
     )
+    ensure_link_columns(conn)
     conn.commit()
     return conn
+
+
+def ensure_link_columns(conn: sqlite3.Connection) -> None:
+    required = {
+        "summary": "TEXT",
+        "category": "TEXT",
+        "tags": "TEXT",
+        "note_path": "TEXT",
+    }
+    existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(links)").fetchall()
+    }
+    for column, col_type in required.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE links ADD COLUMN {column} {col_type}")
+
+
+def normalize_tags(tags: Optional[Iterable[str]]) -> List[str]:
+    if not tags:
+        return []
+    cleaned = [tag.strip() for tag in tags if tag and tag.strip()]
+    return sorted(set(cleaned))
+
+
+def build_article_note_content(
+    *,
+    title: str,
+    url: str,
+    date_iso: str,
+    source: str,
+    category: str,
+    tags: Optional[Iterable[str]],
+    summary: str,
+    bullets: Optional[Iterable[str]] = None,
+    why_it_matters: Optional[str] = None,
+) -> str:
+    tag_list = normalize_tags(tags)
+    yaml_tags = "[" + ", ".join([f'"{tag}"' for tag in tag_list]) + "]"
+    frontmatter = [
+        "---",
+        "type: article",
+        f'source: "{source}"',
+        f'title: "{title}"',
+        f"date: {date_iso}",
+        f'url: "{url}"',
+        f'category: "{category}"',
+        f"tags: {yaml_tags}",
+        "---",
+        "",
+        "# Summary",
+        summary.strip() if summary else "",
+        "",
+        "# Key takeaways",
+    ]
+    lines = frontmatter
+    bullets = [b.strip() for b in (bullets or []) if b and b.strip()]
+    if bullets:
+        for bullet in bullets:
+            lines.append(f"- {bullet}")
+    else:
+        lines.append("-")
+    if why_it_matters and why_it_matters.strip():
+        lines.extend(["", "# Why it matters", why_it_matters.strip()])
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def resolve_label_id(service, label_name: str) -> Optional[str]:
