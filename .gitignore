@@ -1,1 +1,5 @@
 credentials.json
+token.json
+*.db
+.test_tmp
+*.pyc
