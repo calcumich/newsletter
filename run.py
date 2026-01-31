@@ -338,6 +338,11 @@ def write_issue_note(
     path = os.path.join(folder, filename)
     if os.path.exists(path):
         return path
+    domain_map: dict[str, List[Tuple[str, Optional[str]]]] = {}
+    for url, anchor in links:
+        domain = urlsplit(url).netloc
+        domain_map.setdefault(domain, []).append((url, anchor))
+    domains_sorted = sorted(domain_map.keys())
     frontmatter = [
         "---",
         "type: newsletter-issue",
@@ -348,14 +353,21 @@ def write_issue_note(
         "tags: [newsletters]",
         "---",
         "",
+        "# Summary",
+        f"- Total links: {len(links)}",
+        f"- Domains: {len(domains_sorted)}",
+        "",
         "# Links",
         "",
     ]
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(frontmatter))
-        for url, anchor in links:
-            label = anchor.strip() if anchor else url
-            f.write(f"- [{label}]({url})\n")
+        for domain in domains_sorted:
+            f.write(f"## {domain}\n\n")
+            for url, anchor in domain_map[domain]:
+                label = anchor.strip() if anchor else url
+                f.write(f"- [{label}]({url})\n")
+            f.write("\n")
     return path
 
 
