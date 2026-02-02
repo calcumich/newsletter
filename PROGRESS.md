@@ -1,4 +1,4 @@
-# Progress Report
+﻿# Progress Report
 
 ## Current capabilities
 - Gmail ingestion by label with OAuth tokens stored locally.
@@ -6,8 +6,10 @@
 - SQLite state to avoid reprocessing.
 - Issue notes written to Obsidian vault with summary counts + links grouped by domain.
 - `process-links` command to fetch articles, extract main text, summarize, and write article notes.
-- Article notes are linked back into issue notes under an “Articles” section.
+- Article notes are linked back into issue notes under an "Articles" section.
 - OpenAI-backed summarizer via `OPENAI_API_KEY`, with a stub fallback.
+- Observability tooling: `observability/inspect_examples.py` and `observability/observability_examples.ipynb`.
+- Local `vault/` folder created in-repo and gitignored (optional usage).
 
 ## How to run
 
@@ -32,12 +34,13 @@ set OPENAI_API_KEY=your_key
 set OPENAI_MODEL=gpt-4o-mini
 ```
 
-## What’s done vs pending
+## What's done vs pending
 
 Done:
 - Milestone 1 end-to-end flow with issue notes.
 - Milestone 2 core pipeline (fetch/extract/summarize/write article notes).
 - Issue note linking to article notes.
+- Default CLI behavior runs `ingest` when no subcommand is provided.
 
 Pending / improvements:
 - Enforce category set in LLM schema and validate outputs.
