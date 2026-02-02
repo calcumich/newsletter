@@ -513,19 +513,43 @@ def get_unprocessed_links(conn: sqlite3.Connection, limit: int) -> List[str]:
     return [row[0] for row in rows]
 
 
-def fetch_article(url: str, timeout: int = 15) -> Tuple[str, Optional[str], Optional[str]]:
+def fetch_article(
+    url: str,
+    *,
+    timeout: int = 15,
+    retries: int = 2,
+    backoff_base: float = 1.0,
+) -> Tuple[str, Optional[str], Optional[str]]:
     headers = {"User-Agent": "newsletter-ingest/0.1"}
-    try:
-        resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-    except requests.RequestException as exc:
-        return "fail", None, str(exc)
-    if resp.status_code >= 400:
-        return f"http_{resp.status_code}", None, None
-    content_type = resp.headers.get("content-type", "").lower()
-    if "text/html" not in content_type:
-        return "non_html", None, None
-    title, text_content = extract_main_text(resp.text)
-    return "ok", title, text_content
+    attempt = 0
+    while True:
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+        except requests.RequestException as exc:
+            if attempt < retries:
+                delay = backoff_base * (2**attempt)
+                print(f"[fetch] error: {exc} (retrying in {delay:.1f}s)")
+                time.sleep(delay)
+                attempt += 1
+                continue
+            return "fail", None, str(exc)
+        if resp.status_code >= 500 and attempt < retries:
+            delay = backoff_base * (2**attempt)
+            print(
+                f"[fetch] http_{resp.status_code} for {url} (retrying in {delay:.1f}s)"
+            )
+            time.sleep(delay)
+            attempt += 1
+            continue
+        if resp.status_code >= 400:
+            return f"http_{resp.status_code}", None, None
+        if resp.url and resp.url != url:
+            print(f"[fetch] redirect: {url} -> {resp.url}")
+        content_type = resp.headers.get("content-type", "").lower()
+        if "text/html" not in content_type:
+            return "non_html", None, None
+        title, text_content = extract_main_text(resp.text)
+        return "ok", title, text_content
 
 
 def extract_main_text(html: str) -> Tuple[Optional[str], Optional[str]]:
@@ -761,6 +785,9 @@ def ingest(
     token_path: str,
     fetch_articles_flag: bool,
     max_articles: int,
+    fetch_timeout: int,
+    fetch_retries: int,
+    fetch_rate_limit: float,
     vault_path: Optional[str],
     issues_subdir: str,
 ) -> None:
@@ -797,9 +824,17 @@ def ingest(
     if fetch_articles_flag:
         urls = get_unprocessed_links(conn, max_articles)
         for url in urls:
-            status, title, text = fetch_article(url)
+            print(f"[fetch] {url}")
+            status, title, text = fetch_article(
+                url,
+                timeout=fetch_timeout,
+                retries=fetch_retries,
+            )
+            print(f"[fetch] status={status} title={title or ''}")
             content_hash = hash_text(text) if text else None
             mark_link_processed(conn, url, status, title, content_hash)
+            if fetch_rate_limit > 0:
+                time.sleep(fetch_rate_limit)
         conn.commit()
 
 
@@ -808,6 +843,9 @@ def process_links(
     vault_path: str,
     articles_subdir: str,
     max_links: int,
+    fetch_timeout: int,
+    fetch_retries: int,
+    fetch_rate_limit: float,
 ) -> None:
     if not vault_path:
         raise RuntimeError("Vault path is required for process-links.")
@@ -818,7 +856,13 @@ def process_links(
         return
     today = time.strftime("%Y-%m-%d")
     for url in urls:
-        status, title, text = fetch_article(url)
+        print(f"[fetch] {url}")
+        status, title, text = fetch_article(
+            url,
+            timeout=fetch_timeout,
+            retries=fetch_retries,
+        )
+        print(f"[fetch] status={status} title={title or ''}")
         content_hash = hash_text(text) if text else None
         domain = urlsplit(url).netloc
         if status == "ok" and text:
@@ -875,6 +919,8 @@ def process_links(
                 )
         else:
             mark_link_processed(conn, url, status, title, content_hash)
+        if fetch_rate_limit > 0:
+            time.sleep(fetch_rate_limit)
     conn.commit()
 
 
@@ -907,6 +953,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fetch article pages and store title/hash",
     )
     ingest_parser.add_argument("--max-articles", type=int, default=50, help="Max links to fetch")
+    ingest_parser.add_argument(
+        "--fetch-timeout",
+        type=int,
+        default=15,
+        help="Timeout in seconds for article fetches",
+    )
+    ingest_parser.add_argument(
+        "--fetch-retries",
+        type=int,
+        default=2,
+        help="Number of retries for transient fetch failures",
+    )
+    ingest_parser.add_argument(
+        "--fetch-rate-limit",
+        type=float,
+        default=0.0,
+        help="Seconds to sleep between fetches (0 disables)",
+    )
 
     process_parser = subparsers.add_parser(
         "process-links", help="Fetch and process unprocessed article links"
@@ -923,6 +987,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Subdirectory inside the vault for article notes",
     )
     process_parser.add_argument("--max-links", type=int, default=25, help="Max links to fetch")
+    process_parser.add_argument(
+        "--fetch-timeout",
+        type=int,
+        default=15,
+        help="Timeout in seconds for article fetches",
+    )
+    process_parser.add_argument(
+        "--fetch-retries",
+        type=int,
+        default=2,
+        help="Number of retries for transient fetch failures",
+    )
+    process_parser.add_argument(
+        "--fetch-rate-limit",
+        type=float,
+        default=0.0,
+        help="Seconds to sleep between fetches (0 disables)",
+    )
 
     return parser
 
@@ -942,6 +1024,9 @@ def main() -> None:
             token_path=args.token,
             fetch_articles_flag=args.fetch_articles,
             max_articles=args.max_articles,
+            fetch_timeout=args.fetch_timeout,
+            fetch_retries=args.fetch_retries,
+            fetch_rate_limit=args.fetch_rate_limit,
             vault_path=args.vault,
             issues_subdir=args.issues_dir,
         )
@@ -952,6 +1037,9 @@ def main() -> None:
             vault_path=args.vault,
             articles_subdir=args.articles_dir,
             max_links=args.max_links,
+            fetch_timeout=args.fetch_timeout,
+            fetch_retries=args.fetch_retries,
+            fetch_rate_limit=args.fetch_rate_limit,
         )
         return
     raise SystemExit("Unknown command")

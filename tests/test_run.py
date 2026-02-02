@@ -11,6 +11,7 @@ from run import (
     extract_links,
     extract_main_text,
     extract_output_text,
+    fetch_article,
     init_db,
     mark_link_processed,
     normalize_tags,
@@ -360,7 +361,7 @@ def test_process_links_writes_notes_and_updates_db(monkeypatch):
         )
         conn.commit()
 
-        def fake_fetch_article(_url):
+        def fake_fetch_article(_url, **_kwargs):
             return "ok", "Example Title", "First sentence. Second sentence."
 
         monkeypatch.setattr("run.fetch_article", fake_fetch_article)
@@ -369,6 +370,9 @@ def test_process_links_writes_notes_and_updates_db(monkeypatch):
             vault_path=vault,
             articles_subdir=os.path.join("Newsletters", "Articles"),
             max_links=10,
+            fetch_timeout=5,
+            fetch_retries=0,
+            fetch_rate_limit=0.0,
         )
         row = conn.execute(
             "SELECT fetch_status, summary, note_path FROM links WHERE url_canonical = ?",
@@ -380,3 +384,33 @@ def test_process_links_writes_notes_and_updates_db(monkeypatch):
         assert os.path.exists(row[2])
     finally:
         shutil.rmtree(base, ignore_errors=True)
+
+
+def test_fetch_article_retries_then_succeeds(monkeypatch):
+    calls = {"count": 0}
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/html; charset=utf-8"}
+        text = "<html><head><title>Ok</title></head><body>Hi</body></html>"
+        url = "https://example.com/final"
+
+    def fake_get(_url, **_kwargs):
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise requests.RequestException("boom")
+        return FakeResponse()
+
+    import requests
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    status, title, text = fetch_article(
+        "https://example.com/start",
+        timeout=1,
+        retries=2,
+        backoff_base=0,
+    )
+    assert calls["count"] == 3
+    assert status == "ok"
+    assert title == "Ok"
+    assert "Hi" in (text or "")
