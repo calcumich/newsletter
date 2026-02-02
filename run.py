@@ -884,7 +884,14 @@ def ingest(
 
     if fetch_articles_flag:
         urls = get_unprocessed_links(conn, max_articles)
+        total = 0
+        status_counts: dict[str, int] = {}
+        domain_counts: dict[str, int] = {}
+        failure_domain_counts: dict[str, int] = {}
         for url in urls:
+            total += 1
+            domain = urlsplit(url).netloc
+            domain_counts[domain] = domain_counts.get(domain, 0) + 1
             print(f"[fetch] {url}")
             status, title, text = fetch_article(
                 url,
@@ -894,9 +901,29 @@ def ingest(
             print(f"[fetch] status={status} title={title or ''}")
             content_hash = hash_text(text) if text else None
             mark_link_processed(conn, url, status, title, content_hash)
+            status_counts[status] = status_counts.get(status, 0) + 1
+            if status != "ok":
+                failure_domain_counts[domain] = failure_domain_counts.get(domain, 0) + 1
             if fetch_rate_limit > 0:
                 time.sleep(fetch_rate_limit)
         conn.commit()
+        print("\n[fetch-summary] total:", total)
+        if status_counts:
+            print("[fetch-summary] status counts:")
+            for key in sorted(status_counts):
+                print(f"  {key}: {status_counts[key]}")
+        if domain_counts:
+            top_domains = sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+            print("[fetch-summary] top domains:")
+            for domain, count in top_domains:
+                print(f"  {domain}: {count}")
+        if failure_domain_counts:
+            top_failures = sorted(
+                failure_domain_counts.items(), key=lambda x: x[1], reverse=True
+            )[:10]
+            print("[fetch-summary] top failing domains:")
+            for domain, count in top_failures:
+                print(f"  {domain}: {count}")
 
 
 def process_links(
@@ -916,7 +943,14 @@ def process_links(
         print("No unprocessed links.")
         return
     today = time.strftime("%Y-%m-%d")
+    total = 0
+    status_counts: dict[str, int] = {}
+    domain_counts: dict[str, int] = {}
+    failure_domain_counts: dict[str, int] = {}
     for url in urls:
+        total += 1
+        domain = urlsplit(url).netloc
+        domain_counts[domain] = domain_counts.get(domain, 0) + 1
         print(f"[fetch] {url}")
         status, title, text = fetch_article(
             url,
@@ -925,7 +959,9 @@ def process_links(
         )
         print(f"[fetch] status={status} title={title or ''}")
         content_hash = hash_text(text) if text else None
-        domain = urlsplit(url).netloc
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if status != "ok":
+            failure_domain_counts[domain] = failure_domain_counts.get(domain, 0) + 1
         if status == "ok" and text:
             summary_data = summarize_text(
                 text,
@@ -983,6 +1019,23 @@ def process_links(
         if fetch_rate_limit > 0:
             time.sleep(fetch_rate_limit)
     conn.commit()
+    print("\n[fetch-summary] total:", total)
+    if status_counts:
+        print("[fetch-summary] status counts:")
+        for key in sorted(status_counts):
+            print(f"  {key}: {status_counts[key]}")
+    if domain_counts:
+        top_domains = sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        print("[fetch-summary] top domains:")
+        for domain, count in top_domains:
+            print(f"  {domain}: {count}")
+    if failure_domain_counts:
+        top_failures = sorted(
+            failure_domain_counts.items(), key=lambda x: x[1], reverse=True
+        )[:10]
+        print("[fetch-summary] top failing domains:")
+        for domain, count in top_failures:
+            print(f"  {domain}: {count}")
 
 
 def backfill_redirects(
