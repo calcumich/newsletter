@@ -4,27 +4,31 @@ import time
 import shutil
 
 from newsletter.db import ensure_link_columns, init_db, mark_link_processed
-from run import (
-    GmailMessage,
-    backfill_redirects,
-    build_article_note_content,
+from newsletter.links import (
     canonicalize_url,
     extract_and_store_links,
     extract_links,
-    extract_main_text,
-    extract_output_text,
-    fetch_article,
-    make_obsidian_link,
-    normalize_tags,
-    process_links,
     resolve_redirect_url,
     should_skip_url,
+)
+from newsletter.obsidian import (
+    build_article_note_content,
+    make_obsidian_link,
+    normalize_tags,
     slugify_filename,
-    summarize_text,
-    summarize_text_stub,
     update_issue_note_with_article_link,
     write_article_note,
     write_issue_note,
+)
+from run import (
+    GmailMessage,
+    backfill_redirects,
+    extract_main_text,
+    extract_output_text,
+    fetch_article,
+    process_links,
+    summarize_text,
+    summarize_text_stub,
 )
 
 

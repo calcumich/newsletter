@@ -8,17 +8,22 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Tuple
-from urllib.parse import parse_qsl, quote, urlsplit, urlunsplit
+from typing import List, Optional, Tuple
+from urllib.parse import urlsplit
 
 import requests
 from newsletter.db import (
     get_unprocessed_links,
     init_db,
     mark_link_processed,
-    store_link,
     store_message,
     update_issue_note_path,
+)
+from newsletter.links import canonicalize_url, extract_and_store_links, resolve_redirect_url
+from newsletter.obsidian import (
+    update_issue_note_with_article_link,
+    write_article_note,
+    write_issue_note,
 )
 
 try:
@@ -50,37 +55,6 @@ except Exception:
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 DEFAULT_DB = "newsletter.db"
-
-TRACKING_PARAMS = {
-    "fbclid",
-    "gclid",
-    "igshid",
-    "mc_cid",
-    "mc_eid",
-    "mkt_tok",
-    "ref",
-}
-
-SKIP_SUBSTRINGS = [
-    "unsubscribe",
-    "optout",
-    "manage-preferences",
-    "manage_preferences",
-    "preferences",
-    "viewinbrowser",
-    "view-in-browser",
-]
-
-SKIP_DOMAINS = {
-    "facebook.com",
-    "twitter.com",
-    "x.com",
-    "linkedin.com",
-    "instagram.com",
-}
-
-SKIP_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
-
 
 @dataclass
 class GmailMessage:
@@ -116,55 +90,6 @@ def get_gmail_service(credentials_path: str, token_path: str):
         with open(token_path, "w", encoding="utf-8") as f:
             f.write(creds.to_json())
     return build("gmail", "v1", credentials=creds)
-
-
-def normalize_tags(tags: Optional[Iterable[str]]) -> List[str]:
-    if not tags:
-        return []
-    cleaned = [tag.strip() for tag in tags if tag and tag.strip()]
-    return sorted(set(cleaned))
-
-
-def build_article_note_content(
-    *,
-    title: str,
-    url: str,
-    date_iso: str,
-    source: str,
-    category: str,
-    tags: Optional[Iterable[str]],
-    summary: str,
-    bullets: Optional[Iterable[str]] = None,
-    why_it_matters: Optional[str] = None,
-) -> str:
-    tag_list = normalize_tags(tags)
-    yaml_tags = "[" + ", ".join([f'"{tag}"' for tag in tag_list]) + "]"
-    frontmatter = [
-        "---",
-        "type: article",
-        f'source: "{source}"',
-        f'title: "{title}"',
-        f"date: {date_iso}",
-        f'url: "{url}"',
-        f'category: "{category}"',
-        f"tags: {yaml_tags}",
-        "---",
-        "",
-        "# Summary",
-        summary.strip() if summary else "",
-        "",
-        "# Key takeaways",
-    ]
-    lines = frontmatter
-    bullets = [b.strip() for b in (bullets or []) if b and b.strip()]
-    if bullets:
-        for bullet in bullets:
-            lines.append(f"- {bullet}")
-    else:
-        lines.append("-")
-    if why_it_matters and why_it_matters.strip():
-        lines.extend(["", "# Why it matters", why_it_matters.strip()])
-    return "\n".join(lines).rstrip() + "\n"
 
 
 def resolve_label_id(service, label_name: str) -> Optional[str]:
@@ -231,218 +156,8 @@ def get_message(service, message_id: str) -> GmailMessage:
     )
 
 
-def extract_links(html: Optional[str], text: Optional[str]) -> List[Tuple[str, Optional[str]]]:
-    links: List[Tuple[str, Optional[str]]] = []
-    if html and BeautifulSoup is not None:
-        soup = BeautifulSoup(html, "lxml" if "lxml" in sys.modules else "html.parser")
-        for tag in soup.find_all("a", href=True):
-            href = tag["href"].strip()
-            anchor = tag.get_text(" ", strip=True) or None
-            links.append((href, anchor))
-    if text:
-        for match in re.findall(r"https?://[^\s<>()\"']+", text):
-            links.append((match, None))
-    return links
-
-
-def canonicalize_url(url: str) -> Optional[str]:
-    url = url.strip()
-    if not url:
-        return None
-    if url.startswith("//"):
-        url = "https:" + url
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https"):
-        return None
-    netloc = parts.netloc.lower()
-    if netloc.endswith(":80") and parts.scheme == "http":
-        netloc = netloc[:-3]
-    if netloc.endswith(":443") and parts.scheme == "https":
-        netloc = netloc[:-4]
-    path = parts.path or "/"
-    if path != "/" and path.endswith("/"):
-        path = path[:-1]
-    query_pairs = []
-    for key, value in parse_qsl(parts.query, keep_blank_values=True):
-        if key.startswith("utm_"):
-            continue
-        if key in TRACKING_PARAMS:
-            continue
-        query_pairs.append((key, value))
-    query_pairs.sort()
-    query = "&".join([f"{quote(k)}={quote(v)}" if v else quote(k) for k, v in query_pairs])
-    return urlunsplit((parts.scheme, netloc, path, query, ""))
-
-
-def should_skip_url(url: str) -> bool:
-    lower = url.lower()
-    if lower.startswith("mailto:"):
-        return True
-    for fragment in SKIP_SUBSTRINGS:
-        if fragment in lower:
-            return True
-    parts = urlsplit(lower)
-    if parts.netloc in SKIP_DOMAINS:
-        return True
-    for ext in SKIP_EXTENSIONS:
-        if parts.path.endswith(ext):
-            return True
-    return False
-
-
 def hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def resolve_redirect_url(
-    url: str,
-    *,
-    timeout: int = 10,
-    retries: int = 1,
-    backoff_base: float = 0.5,
-) -> Optional[str]:
-    headers = {"User-Agent": "newsletter-ingest/0.1"}
-    attempt = 0
-    while True:
-        try:
-            resp = requests.head(
-                url, headers=headers, timeout=timeout, allow_redirects=True
-            )
-            if resp.status_code in (405, 403) or resp.status_code >= 500:
-                resp = requests.get(
-                    url, headers=headers, timeout=timeout, allow_redirects=True
-                )
-        except requests.RequestException:
-            if attempt < retries:
-                time.sleep(backoff_base * (2**attempt))
-                attempt += 1
-                continue
-            return None
-        if resp.status_code >= 400:
-            return None
-        return resp.url or url
-
-
-def extract_and_store_links(
-    conn,
-    msg: GmailMessage,
-    *,
-    resolve_redirects: bool = False,
-    redirect_timeout: int = 10,
-    redirect_retries: int = 1,
-    redirect_rate_limit: float = 0.0,
-) -> List[Tuple[str, Optional[str]]]:
-    raw_links = extract_links(msg.html, msg.text)
-    seen = set()
-    canonical_links: List[Tuple[str, Optional[str]]] = []
-    for href, _anchor in raw_links:
-        if should_skip_url(href):
-            continue
-        resolved_href = href
-        if resolve_redirects:
-            resolved = resolve_redirect_url(
-                href,
-                timeout=redirect_timeout,
-                retries=redirect_retries,
-            )
-            if resolved:
-                resolved_href = resolved
-            if redirect_rate_limit > 0:
-                time.sleep(redirect_rate_limit)
-        canon = canonicalize_url(resolved_href)
-        if not canon or canon in seen:
-            continue
-        seen.add(canon)
-        canonical_links.append((canon, _anchor))
-        store_link(conn, canon, href, msg.message_id, int(time.time()))
-    return canonical_links
-
-
-def slugify_filename(text: str) -> str:
-    safe = re.sub(r"[^\w\s.-]", "", text, flags=re.UNICODE)
-    safe = re.sub(r"\s+", " ", safe).strip()
-    if not safe:
-        safe = "Newsletter"
-    return safe[:120]
-
-
-def write_issue_note(
-    vault_path: str,
-    issues_subdir: str,
-    msg: GmailMessage,
-    links: List[Tuple[str, Optional[str]]],
-) -> Optional[str]:
-    if not vault_path:
-        return None
-    issue_date = time.strftime("%Y-%m-%d", time.localtime(msg.internal_date / 1000))
-    year = issue_date[:4]
-    month = issue_date[5:7]
-    folder = os.path.join(vault_path, issues_subdir, year, month)
-    os.makedirs(folder, exist_ok=True)
-    subject = msg.subject or "Newsletter"
-    filename = f"{issue_date} - {slugify_filename(subject)}.md"
-    path = os.path.join(folder, filename)
-    if os.path.exists(path):
-        return path
-    domain_map: dict[str, List[Tuple[str, Optional[str]]]] = {}
-    for url, anchor in links:
-        domain = urlsplit(url).netloc
-        domain_map.setdefault(domain, []).append((url, anchor))
-    domains_sorted = sorted(domain_map.keys())
-    frontmatter = [
-        "---",
-        "type: newsletter-issue",
-        f'source: "{subject}"',
-        f"date: {issue_date}",
-        f'gmail_message_id: "{msg.message_id}"',
-        f'from: "{msg.from_email}"',
-        "tags: [newsletters]",
-        "---",
-        "",
-        "# Summary",
-        f"- Total links: {len(links)}",
-        f"- Domains: {len(domains_sorted)}",
-        "",
-        "# Links",
-        "",
-    ]
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(frontmatter))
-        for domain in domains_sorted:
-            f.write(f"## {domain}\n\n")
-            for url, anchor in domain_map[domain]:
-                label = anchor.strip() if anchor else url
-                f.write(f"- [{label}]({url})\n")
-            f.write("\n")
-    return path
-
-
-def make_obsidian_link(article_path: str, vault_path: str, title: str) -> str:
-    rel = os.path.relpath(article_path, vault_path).replace("\\", "/")
-    if rel.lower().endswith(".md"):
-        rel = rel[:-3]
-    return f"[[{rel}|{title}]]"
-
-
-def update_issue_note_with_article_link(
-    issue_note_path: str,
-    article_path: str,
-    vault_path: str,
-    title: str,
-) -> None:
-    if not os.path.exists(issue_note_path):
-        return
-    link = make_obsidian_link(article_path, vault_path, title)
-    with open(issue_note_path, "r", encoding="utf-8") as f:
-        content = f.read()
-    if link in content:
-        return
-    section_header = "\n## Articles\n"
-    if "## Articles" not in content:
-        content = content.rstrip() + section_header
-    content = content.rstrip() + f"\n- {link}\n"
-    with open(issue_note_path, "w", encoding="utf-8") as f:
-        f.write(content)
 
 
 def fetch_article(
@@ -634,42 +349,6 @@ def summarize_text(
         "confidence": 0.3,
         "paywall_or_blocked": False,
     }
-
-
-def write_article_note(
-    vault_path: str,
-    articles_subdir: str,
-    *,
-    title: str,
-    url: str,
-    date_iso: str,
-    source: str,
-    category: str,
-    tags: Optional[Iterable[str]],
-    summary: str,
-    bullets: Optional[Iterable[str]],
-    why_it_matters: Optional[str] = None,
-) -> str:
-    year = date_iso[:4]
-    folder = os.path.join(vault_path, articles_subdir, category, year)
-    os.makedirs(folder, exist_ok=True)
-    filename = f"{slugify_filename(title)}.md"
-    path = os.path.join(folder, filename)
-    if not os.path.exists(path):
-        content = build_article_note_content(
-            title=title,
-            url=url,
-            date_iso=date_iso,
-            source=source,
-            category=category,
-            tags=tags,
-            summary=summary,
-            bullets=bullets,
-            why_it_matters=why_it_matters,
-        )
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-    return path
 
 
 def ingest(
