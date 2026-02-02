@@ -985,6 +985,59 @@ def process_links(
     conn.commit()
 
 
+def backfill_redirects(
+    db_path: str,
+    *,
+    max_links: int,
+    redirect_timeout: int,
+    redirect_retries: int,
+    redirect_rate_limit: float,
+) -> None:
+    conn = init_db(db_path)
+    rows = conn.execute(
+        "SELECT url_canonical, original_url FROM links ORDER BY discovered_at DESC LIMIT ?",
+        (max_links,),
+    ).fetchall()
+    updated = 0
+    for url_canonical, original_url in rows:
+        resolved = resolve_redirect_url(
+            url_canonical,
+            timeout=redirect_timeout,
+            retries=redirect_retries,
+        )
+        if not resolved:
+            continue
+        canon = canonicalize_url(resolved)
+        if not canon or canon == url_canonical:
+            continue
+        exists = conn.execute(
+            "SELECT 1 FROM links WHERE url_canonical = ?",
+            (canon,),
+        ).fetchone()
+        if exists:
+            print(f"[backfill] skip (conflict): {url_canonical} -> {canon}")
+            continue
+        domain = urlsplit(canon).netloc
+        conn.execute(
+            """
+            UPDATE links
+            SET url_canonical = ?, domain = ?, original_url = COALESCE(?, original_url)
+            WHERE url_canonical = ?
+            """,
+            (
+                canon,
+                domain,
+                original_url or url_canonical,
+                url_canonical,
+            ),
+        )
+        updated += 1
+        if redirect_rate_limit > 0:
+            time.sleep(redirect_rate_limit)
+    conn.commit()
+    print(f"[backfill] updated {updated} links")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Newsletter Gmail ingestion.")
     subparsers = parser.add_subparsers(dest="command")
@@ -1090,6 +1143,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds to sleep between fetches (0 disables)",
     )
 
+    backfill_parser = subparsers.add_parser(
+        "backfill-redirects",
+        help="Resolve and update redirect URLs for existing links",
+    )
+    backfill_parser.add_argument("--db", default=DEFAULT_DB, help="SQLite DB path")
+    backfill_parser.add_argument("--max-links", type=int, default=200, help="Max links to scan")
+    backfill_parser.add_argument(
+        "--redirect-timeout",
+        type=int,
+        default=10,
+        help="Timeout in seconds for redirect resolution",
+    )
+    backfill_parser.add_argument(
+        "--redirect-retries",
+        type=int,
+        default=1,
+        help="Number of retries for redirect resolution",
+    )
+    backfill_parser.add_argument(
+        "--redirect-rate-limit",
+        type=float,
+        default=0.0,
+        help="Seconds to sleep between redirect checks (0 disables)",
+    )
+
     return parser
 
 
@@ -1128,6 +1206,15 @@ def main() -> None:
             fetch_timeout=args.fetch_timeout,
             fetch_retries=args.fetch_retries,
             fetch_rate_limit=args.fetch_rate_limit,
+        )
+        return
+    if args.command == "backfill-redirects":
+        backfill_redirects(
+            db_path=args.db,
+            max_links=args.max_links,
+            redirect_timeout=args.redirect_timeout,
+            redirect_retries=args.redirect_retries,
+            redirect_rate_limit=args.redirect_rate_limit,
         )
         return
     raise SystemExit("Unknown command")

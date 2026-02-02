@@ -6,6 +6,7 @@ import shutil
 from run import (
     GmailMessage,
     build_article_note_content,
+    backfill_redirects,
     canonicalize_url,
     extract_and_store_links,
     extract_links,
@@ -402,6 +403,44 @@ def test_resolve_redirect_url_returns_final(monkeypatch):
     monkeypatch.setattr(requests, "head", fake_head)
     resolved = resolve_redirect_url("https://tldrtracking.example.com/abc")
     assert resolved == "https://final.example.com/post"
+
+
+def test_backfill_redirects_updates_canonical(monkeypatch):
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".test_tmp"))
+    try:
+        os.makedirs(base, exist_ok=True)
+        db_path = os.path.join(base, "backfill.db")
+        conn = init_db(db_path)
+        conn.execute(
+            """
+            INSERT INTO links (url_canonical, first_seen_message_id, domain, discovered_at)
+            VALUES ('https://tldrtracking.example.com/abc', 'msg', 'tldrtracking.example.com', 1)
+            """
+        )
+        conn.commit()
+
+        def fake_resolve(url, **_kwargs):
+            assert url == "https://tldrtracking.example.com/abc"
+            return "https://final.example.com/post?utm_source=x"
+
+        monkeypatch.setattr("run.resolve_redirect_url", fake_resolve)
+        backfill_redirects(
+            db_path=db_path,
+            max_links=10,
+            redirect_timeout=1,
+            redirect_retries=0,
+            redirect_rate_limit=0.0,
+        )
+        row = conn.execute(
+            "SELECT url_canonical, domain, original_url FROM links"
+        ).fetchone()
+        assert row == (
+            "https://final.example.com/post",
+            "final.example.com",
+            "https://tldrtracking.example.com/abc",
+        )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
 
 
 def test_fetch_article_retries_then_succeeds(monkeypatch):
