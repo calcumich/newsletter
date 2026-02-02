@@ -21,13 +21,15 @@ from newsletter.obsidian import (
     write_issue_note,
 )
 from newsletter.fetch import extract_main_text, fetch_article
+from newsletter.summarize import (
+    extract_output_text,
+    summarize_text,
+    summarize_text_stub,
+)
 from run import (
     GmailMessage,
     backfill_redirects,
-    extract_output_text,
     process_links,
-    summarize_text,
-    summarize_text_stub,
 )
 
 
