@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 import re
-import sqlite3
 import sys
 import time
 from dataclasses import dataclass
@@ -13,6 +12,14 @@ from typing import Iterable, List, Optional, Tuple
 from urllib.parse import parse_qsl, quote, urlsplit, urlunsplit
 
 import requests
+from newsletter.db import (
+    get_unprocessed_links,
+    init_db,
+    mark_link_processed,
+    store_link,
+    store_message,
+    update_issue_note_path,
+)
 
 try:
     from bs4 import BeautifulSoup
@@ -109,74 +116,6 @@ def get_gmail_service(credentials_path: str, token_path: str):
         with open(token_path, "w", encoding="utf-8") as f:
             f.write(creds.to_json())
     return build("gmail", "v1", credentials=creds)
-
-
-def init_db(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS gmail_messages (
-            message_id TEXT PRIMARY KEY,
-            internal_date INTEGER,
-            subject TEXT,
-            from_email TEXT,
-            label_ids TEXT,
-            processed_at INTEGER,
-            content_hash TEXT,
-            issue_note_path TEXT
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS links (
-            url_canonical TEXT PRIMARY KEY,
-            first_seen_message_id TEXT,
-            domain TEXT,
-            title TEXT,
-            discovered_at INTEGER,
-            processed_at INTEGER,
-            fetch_status TEXT,
-            content_hash TEXT,
-            summary TEXT,
-            category TEXT,
-            tags TEXT,
-            note_path TEXT
-        )
-        """
-    )
-    ensure_link_columns(conn)
-    ensure_gmail_columns(conn)
-    conn.commit()
-    return conn
-
-
-def ensure_gmail_columns(conn: sqlite3.Connection) -> None:
-    required = {
-        "issue_note_path": "TEXT",
-    }
-    existing = {
-        row[1] for row in conn.execute("PRAGMA table_info(gmail_messages)").fetchall()
-    }
-    for column, col_type in required.items():
-        if column not in existing:
-            conn.execute(f"ALTER TABLE gmail_messages ADD COLUMN {column} {col_type}")
-
-
-def ensure_link_columns(conn: sqlite3.Connection) -> None:
-    required = {
-        "summary": "TEXT",
-        "category": "TEXT",
-        "tags": "TEXT",
-        "note_path": "TEXT",
-        "original_url": "TEXT",
-    }
-    existing = {
-        row[1] for row in conn.execute("PRAGMA table_info(links)").fetchall()
-    }
-    for column, col_type in required.items():
-        if column not in existing:
-            conn.execute(f"ALTER TABLE links ADD COLUMN {column} {col_type}")
 
 
 def normalize_tags(tags: Optional[Iterable[str]]) -> List[str]:
@@ -355,55 +294,6 @@ def hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def store_message(conn: sqlite3.Connection, msg: GmailMessage) -> None:
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO gmail_messages
-        (message_id, internal_date, subject, from_email, label_ids, processed_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            msg.message_id,
-            msg.internal_date,
-            msg.subject,
-            msg.from_email,
-            msg.label_ids,
-            int(time.time()),
-        ),
-    )
-
-
-def update_issue_note_path(
-    conn: sqlite3.Connection,
-    message_id: str,
-    issue_note_path: Optional[str],
-) -> None:
-    if not issue_note_path:
-        return
-    conn.execute(
-        "UPDATE gmail_messages SET issue_note_path = ? WHERE message_id = ?",
-        (issue_note_path, message_id),
-    )
-
-
-def store_link(
-    conn: sqlite3.Connection,
-    url: str,
-    original_url: Optional[str],
-    message_id: str,
-    discovered_at: int,
-) -> None:
-    domain = urlsplit(url).netloc
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO links
-        (url_canonical, first_seen_message_id, domain, discovered_at, original_url)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (url, message_id, domain, discovered_at, original_url),
-    )
-
-
 def resolve_redirect_url(
     url: str,
     *,
@@ -555,14 +445,6 @@ def update_issue_note_with_article_link(
         f.write(content)
 
 
-def get_unprocessed_links(conn: sqlite3.Connection, limit: int) -> List[str]:
-    rows = conn.execute(
-        "SELECT url_canonical FROM links WHERE processed_at IS NULL LIMIT ?",
-        (limit,),
-    ).fetchall()
-    return [row[0] for row in rows]
-
-
 def fetch_article(
     url: str,
     *,
@@ -625,42 +507,6 @@ def extract_main_text(html: str) -> Tuple[Optional[str], Optional[str]]:
                 tag.decompose()
             text_content = soup.get_text(" ", strip=True)
     return title, text_content
-
-
-def mark_link_processed(
-    conn: sqlite3.Connection,
-    url: str,
-    status: str,
-    title: Optional[str],
-    content_hash: Optional[str],
-    summary: Optional[str] = None,
-    category: Optional[str] = None,
-    tags: Optional[Iterable[str]] = None,
-    note_path: Optional[str] = None,
-) -> None:
-    tags_json = json.dumps(normalize_tags(tags)) if tags is not None else None
-    conn.execute(
-        """
-        UPDATE links
-        SET processed_at = ?, fetch_status = ?, title = ?, content_hash = ?
-            , summary = COALESCE(?, summary)
-            , category = COALESCE(?, category)
-            , tags = COALESCE(?, tags)
-            , note_path = COALESCE(?, note_path)
-        WHERE url_canonical = ?
-        """,
-        (
-            int(time.time()),
-            status,
-            title,
-            content_hash,
-            summary,
-            category,
-            tags_json,
-            note_path,
-            url,
-        ),
-    )
 
 
 def summarize_text_stub(text: str, max_sentences: int = 2) -> Tuple[str, List[str]]:

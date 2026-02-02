@@ -3,28 +3,25 @@ import sqlite3
 import time
 import shutil
 
+from newsletter.db import ensure_link_columns, init_db, mark_link_processed
 from run import (
     GmailMessage,
-    build_article_note_content,
     backfill_redirects,
+    build_article_note_content,
     canonicalize_url,
     extract_and_store_links,
     extract_links,
     extract_main_text,
     extract_output_text,
     fetch_article,
-    init_db,
-    mark_link_processed,
-    normalize_tags,
     make_obsidian_link,
+    normalize_tags,
     process_links,
-    ensure_link_columns,
-    fetch_article,
     resolve_redirect_url,
     should_skip_url,
     slugify_filename,
-    summarize_text_stub,
     summarize_text,
+    summarize_text_stub,
     update_issue_note_with_article_link,
     write_article_note,
     write_issue_note,
@@ -377,6 +374,7 @@ def test_process_links_writes_notes_and_updates_db(monkeypatch):
             fetch_timeout=5,
             fetch_retries=0,
             fetch_rate_limit=0.0,
+            fetch_summary_json="",
         )
         row = conn.execute(
             "SELECT fetch_status, summary, note_path FROM links WHERE url_canonical = ?",

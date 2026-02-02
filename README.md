@@ -24,6 +24,13 @@ Backfill redirect URLs (optional):
 python run.py backfill-redirects --db newsletter.db --max-links 200 --redirect-rate-limit 0.2
 ```
 
+## Project structure (high level)
+
+- `run.py`: entrypoint CLI (will remain as thin wrapper).
+- `newsletter/`: package for core pipeline modules (refactor in progress).
+- `observability/`: notebooks and scripts for inspecting outputs.
+- `tests/`: unit tests.
+
 ## Tests
 
 Install deps:
