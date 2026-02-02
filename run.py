@@ -838,6 +838,7 @@ def ingest(
     fetch_timeout: int,
     fetch_retries: int,
     fetch_rate_limit: float,
+    fetch_summary_json: str,
     resolve_redirects: bool,
     redirect_timeout: int,
     redirect_retries: int,
@@ -924,6 +925,19 @@ def ingest(
             print("[fetch-summary] top failing domains:")
             for domain, count in top_failures:
                 print(f"  {domain}: {count}")
+        if fetch_summary_json:
+            summary = {
+                "type": "fetch_summary",
+                "total": total,
+                "status_counts": status_counts,
+                "domain_counts_top10": dict(
+                    sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+                ),
+                "failure_domain_counts_top10": dict(top_failures) if failure_domain_counts else {},
+                "timestamp": int(time.time()),
+            }
+            with open(fetch_summary_json, "w", encoding="utf-8") as f:
+                json.dump(summary, f, indent=2)
 
 
 def process_links(
@@ -934,6 +948,7 @@ def process_links(
     fetch_timeout: int,
     fetch_retries: int,
     fetch_rate_limit: float,
+    fetch_summary_json: str,
 ) -> None:
     if not vault_path:
         raise RuntimeError("Vault path is required for process-links.")
@@ -1036,6 +1051,19 @@ def process_links(
         print("[fetch-summary] top failing domains:")
         for domain, count in top_failures:
             print(f"  {domain}: {count}")
+    if fetch_summary_json:
+        summary = {
+            "type": "fetch_summary",
+            "total": total,
+            "status_counts": status_counts,
+            "domain_counts_top10": dict(
+                sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+            ),
+            "failure_domain_counts_top10": dict(top_failures) if failure_domain_counts else {},
+            "timestamp": int(time.time()),
+        }
+        with open(fetch_summary_json, "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2)
 
 
 def backfill_redirects(
@@ -1161,6 +1189,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="Seconds to sleep between fetches (0 disables)",
     )
+    ingest_parser.add_argument(
+        "--fetch-summary-json",
+        default="",
+        help="Write fetch summary JSON to this path (optional)",
+    )
 
     process_parser = subparsers.add_parser(
         "process-links", help="Fetch and process unprocessed article links"
@@ -1194,6 +1227,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.0,
         help="Seconds to sleep between fetches (0 disables)",
+    )
+    process_parser.add_argument(
+        "--fetch-summary-json",
+        default="",
+        help="Write fetch summary JSON to this path (optional)",
     )
 
     backfill_parser = subparsers.add_parser(
@@ -1242,6 +1280,7 @@ def main() -> None:
             fetch_timeout=args.fetch_timeout,
             fetch_retries=args.fetch_retries,
             fetch_rate_limit=args.fetch_rate_limit,
+            fetch_summary_json=args.fetch_summary_json,
             resolve_redirects=args.resolve_redirects,
             redirect_timeout=args.redirect_timeout,
             redirect_retries=args.redirect_retries,
@@ -1259,6 +1298,7 @@ def main() -> None:
             fetch_timeout=args.fetch_timeout,
             fetch_retries=args.fetch_retries,
             fetch_rate_limit=args.fetch_rate_limit,
+            fetch_summary_json=args.fetch_summary_json,
         )
         return
     if args.command == "backfill-redirects":
