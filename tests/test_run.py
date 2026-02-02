@@ -20,12 +20,11 @@ from newsletter.obsidian import (
     write_article_note,
     write_issue_note,
 )
+from newsletter.fetch import extract_main_text, fetch_article
 from run import (
     GmailMessage,
     backfill_redirects,
-    extract_main_text,
     extract_output_text,
-    fetch_article,
     process_links,
     summarize_text,
     summarize_text_stub,
