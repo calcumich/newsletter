@@ -19,6 +19,11 @@ Fetch article pages and write article notes:
 python run.py process-links --db newsletter.db --vault "C:\\Path\\To\\Repo\\vault" --max-links 25
 ```
 
+Backfill redirect URLs (optional):
+```bash
+python run.py backfill-redirects --db newsletter.db --max-links 200 --redirect-rate-limit 0.2
+```
+
 ## Tests
 
 Install deps:
