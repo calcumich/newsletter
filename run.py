@@ -169,6 +169,7 @@ def ensure_link_columns(conn: sqlite3.Connection) -> None:
         "category": "TEXT",
         "tags": "TEXT",
         "note_path": "TEXT",
+        "original_url": "TEXT",
     }
     existing = {
         row[1] for row in conn.execute("PRAGMA table_info(links)").fetchall()
@@ -388,6 +389,7 @@ def update_issue_note_path(
 def store_link(
     conn: sqlite3.Connection,
     url: str,
+    original_url: Optional[str],
     message_id: str,
     discovered_at: int,
 ) -> None:
@@ -395,26 +397,74 @@ def store_link(
     conn.execute(
         """
         INSERT OR IGNORE INTO links
-        (url_canonical, first_seen_message_id, domain, discovered_at)
-        VALUES (?, ?, ?, ?)
+        (url_canonical, first_seen_message_id, domain, discovered_at, original_url)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (url, message_id, domain, discovered_at),
+        (url, message_id, domain, discovered_at, original_url),
     )
 
 
-def extract_and_store_links(conn, msg: GmailMessage) -> List[Tuple[str, Optional[str]]]:
+def resolve_redirect_url(
+    url: str,
+    *,
+    timeout: int = 10,
+    retries: int = 1,
+    backoff_base: float = 0.5,
+) -> Optional[str]:
+    headers = {"User-Agent": "newsletter-ingest/0.1"}
+    attempt = 0
+    while True:
+        try:
+            resp = requests.head(
+                url, headers=headers, timeout=timeout, allow_redirects=True
+            )
+            if resp.status_code in (405, 403) or resp.status_code >= 500:
+                resp = requests.get(
+                    url, headers=headers, timeout=timeout, allow_redirects=True
+                )
+        except requests.RequestException:
+            if attempt < retries:
+                time.sleep(backoff_base * (2**attempt))
+                attempt += 1
+                continue
+            return None
+        if resp.status_code >= 400:
+            return None
+        return resp.url or url
+
+
+def extract_and_store_links(
+    conn,
+    msg: GmailMessage,
+    *,
+    resolve_redirects: bool = False,
+    redirect_timeout: int = 10,
+    redirect_retries: int = 1,
+    redirect_rate_limit: float = 0.0,
+) -> List[Tuple[str, Optional[str]]]:
     raw_links = extract_links(msg.html, msg.text)
     seen = set()
     canonical_links: List[Tuple[str, Optional[str]]] = []
     for href, _anchor in raw_links:
         if should_skip_url(href):
             continue
-        canon = canonicalize_url(href)
+        resolved_href = href
+        if resolve_redirects:
+            resolved = resolve_redirect_url(
+                href,
+                timeout=redirect_timeout,
+                retries=redirect_retries,
+            )
+            if resolved:
+                resolved_href = resolved
+            if redirect_rate_limit > 0:
+                time.sleep(redirect_rate_limit)
+        canon = canonicalize_url(resolved_href)
         if not canon or canon in seen:
             continue
         seen.add(canon)
         canonical_links.append((canon, _anchor))
-        store_link(conn, canon, msg.message_id, int(time.time()))
+        store_link(conn, canon, href, msg.message_id, int(time.time()))
     return canonical_links
 
 
@@ -788,6 +838,10 @@ def ingest(
     fetch_timeout: int,
     fetch_retries: int,
     fetch_rate_limit: float,
+    resolve_redirects: bool,
+    redirect_timeout: int,
+    redirect_retries: int,
+    redirect_rate_limit: float,
     vault_path: Optional[str],
     issues_subdir: str,
 ) -> None:
@@ -816,7 +870,14 @@ def ingest(
             continue
         msg = get_message(service, message_id)
         store_message(conn, msg)
-        links = extract_and_store_links(conn, msg)
+        links = extract_and_store_links(
+            conn,
+            msg,
+            resolve_redirects=resolve_redirects,
+            redirect_timeout=redirect_timeout,
+            redirect_retries=redirect_retries,
+            redirect_rate_limit=redirect_rate_limit,
+        )
         issue_path = write_issue_note(vault_path or "", issues_subdir, msg, links)
         update_issue_note_path(conn, msg.message_id, issue_path)
     conn.commit()
@@ -954,6 +1015,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ingest_parser.add_argument("--max-articles", type=int, default=50, help="Max links to fetch")
     ingest_parser.add_argument(
+        "--resolve-redirects",
+        action="store_true",
+        help="Resolve tracking/redirect URLs before storing",
+    )
+    ingest_parser.add_argument(
+        "--redirect-timeout",
+        type=int,
+        default=10,
+        help="Timeout in seconds for redirect resolution",
+    )
+    ingest_parser.add_argument(
+        "--redirect-retries",
+        type=int,
+        default=1,
+        help="Number of retries for redirect resolution",
+    )
+    ingest_parser.add_argument(
+        "--redirect-rate-limit",
+        type=float,
+        default=0.0,
+        help="Seconds to sleep between redirect checks (0 disables)",
+    )
+    ingest_parser.add_argument(
         "--fetch-timeout",
         type=int,
         default=15,
@@ -1027,6 +1111,10 @@ def main() -> None:
             fetch_timeout=args.fetch_timeout,
             fetch_retries=args.fetch_retries,
             fetch_rate_limit=args.fetch_rate_limit,
+            resolve_redirects=args.resolve_redirects,
+            redirect_timeout=args.redirect_timeout,
+            redirect_retries=args.redirect_retries,
+            redirect_rate_limit=args.redirect_rate_limit,
             vault_path=args.vault,
             issues_subdir=args.issues_dir,
         )

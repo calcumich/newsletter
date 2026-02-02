@@ -18,6 +18,8 @@ from run import (
     make_obsidian_link,
     process_links,
     ensure_link_columns,
+    fetch_article,
+    resolve_redirect_url,
     should_skip_url,
     slugify_filename,
     summarize_text_stub,
@@ -80,10 +82,10 @@ def test_extract_and_store_links_dedupes_and_inserts():
         '<a href="https://example.com/a">A2</a>',
         text=None,
     )
-    links = extract_and_store_links(conn, msg)
+    links = extract_and_store_links(conn, msg, resolve_redirects=False)
     assert links == [("https://example.com/a", "A")]
-    rows = conn.execute("SELECT url_canonical FROM links").fetchall()
-    assert rows == [("https://example.com/a",)]
+    rows = conn.execute("SELECT url_canonical, original_url FROM links").fetchall()
+    assert rows == [("https://example.com/a", "https://example.com/a?utm_source=x")]
 
 
 def test_write_issue_note_creates_file_and_contents():
@@ -251,6 +253,7 @@ def test_ensure_link_columns_idempotent():
     assert "category" in cols
     assert "tags" in cols
     assert "note_path" in cols
+    assert "original_url" in cols
 
 
 def test_summarize_text_stub():
@@ -384,6 +387,21 @@ def test_process_links_writes_notes_and_updates_db(monkeypatch):
         assert os.path.exists(row[2])
     finally:
         shutil.rmtree(base, ignore_errors=True)
+
+
+def test_resolve_redirect_url_returns_final(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        url = "https://final.example.com/post"
+
+    def fake_head(_url, **_kwargs):
+        return FakeResponse()
+
+    import requests
+
+    monkeypatch.setattr(requests, "head", fake_head)
+    resolved = resolve_redirect_url("https://tldrtracking.example.com/abc")
+    assert resolved == "https://final.example.com/post"
 
 
 def test_fetch_article_retries_then_succeeds(monkeypatch):
