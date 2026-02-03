@@ -28,6 +28,7 @@ python run.py backfill-redirects --db newsletter.db --max-links 200 --redirect-r
 
 - `run.py`: entrypoint CLI (will remain as thin wrapper).
 - `newsletter/`: package for core pipeline modules (refactor in progress).
+- `newsletter/cli.py`: CLI orchestration and command dispatch.
 - `observability/`: notebooks and scripts for inspecting outputs.
 - `tests/`: unit tests.
 
