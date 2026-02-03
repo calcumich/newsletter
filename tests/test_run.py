@@ -26,11 +26,8 @@ from newsletter.summarize import (
     summarize_text,
     summarize_text_stub,
 )
-from run import (
-    GmailMessage,
-    backfill_redirects,
-    process_links,
-)
+from newsletter.gmail import GmailMessage
+from run import backfill_redirects, process_links
 
 
 def test_canonicalize_url_strips_tracking_and_normalizes():
