@@ -27,7 +27,7 @@ from newsletter.summarize import (
     summarize_text_stub,
 )
 from newsletter.gmail import GmailMessage
-from run import backfill_redirects, process_links
+from newsletter.cli import backfill_redirects, process_links
 
 
 def test_canonicalize_url_strips_tracking_and_normalizes():
@@ -367,7 +367,7 @@ def test_process_links_writes_notes_and_updates_db(monkeypatch):
         def fake_fetch_article(_url, **_kwargs):
             return "ok", "Example Title", "First sentence. Second sentence."
 
-        monkeypatch.setattr("run.fetch_article", fake_fetch_article)
+        monkeypatch.setattr("newsletter.cli.fetch_article", fake_fetch_article)
         process_links(
             db_path=db_path,
             vault_path=vault,
@@ -423,7 +423,7 @@ def test_backfill_redirects_updates_canonical(monkeypatch):
             assert url == "https://tldrtracking.example.com/abc"
             return "https://final.example.com/post?utm_source=x"
 
-        monkeypatch.setattr("run.resolve_redirect_url", fake_resolve)
+        monkeypatch.setattr("newsletter.cli.resolve_redirect_url", fake_resolve)
         backfill_redirects(
             db_path=db_path,
             max_links=10,
