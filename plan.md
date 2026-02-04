@@ -1,31 +1,76 @@
-# Newsletter Digest -> Obsidian Pipeline
+# Newsletter Pipeline Plan
 
-## Status (as of 2026-02-04)
+## Current State (2026-02-04)
 
-Implemented:
-- Gmail ingest by label with OAuth and local token storage.
-- Link extraction/filtering/canonicalization and dedupe into SQLite.
-- Redirect resolution on ingest and post-hoc backfill.
-- Issue note and article note generation for Obsidian.
-- Article summarization with OpenAI (fallback stub when no key is set).
-- Category/tag normalization with `needs-review` fallback tagging.
-- Issue-link updates that replace matching external links with internal Obsidian links.
-- `process-links` and `refresh` dry-run support.
-- `refresh` filters by age/status/domain/category plus presets (`--failed-only`, `--ok-only`, `--stale-ok`).
-- Structured JSONL event logging for `ingest`, `process-links`, and `refresh`.
+Complete:
+- End-to-end ingest -> link extraction -> DB persistence -> issue notes.
+- Link processing and refresh workflows with summarization and article note generation.
+- Redirect handling (`--resolve-redirects` + `backfill-redirects`).
+- Issue-note internal linking replacement logic.
+- Safe preview modes (`process-links --dry-run`, `refresh --dry-run`).
+- Refresh filters and presets (`--statuses`, `--domains`, `--categories`, `--failed-only`, `--ok-only`, `--stale-ok`).
+- Structured JSONL logging across key commands.
 
-Current source-of-truth usage is documented in `README.md`.
+Reference:
+- Behavior/spec contract lives in `spec.md`.
+- Usage and examples live in `README.md`.
 
-## Current command set
+## Milestone Plan
 
-- `python run.py ingest ...`
-- `python run.py process-links ...`
-- `python run.py refresh ...`
-- `python run.py backfill-redirects ...`
+### Milestone A: Refresh UX and Profiles
 
-## Near-term roadmap
+Scope:
+- Add category shortcut flags (example: `--security-only`, `--ml-only`).
+- Add saved filter profiles (optional config file support).
 
-1. Add category-specific refresh shortcuts (for example `--security-only`).
-2. Improve failure taxonomy and logging detail for fetch errors.
-3. Add CLI integration tests (argument wiring and command dispatch).
-4. Add lightweight observability views over JSONL logs.
+Acceptance criteria:
+- Common refresh intents can be run with short commands.
+- Profiles can be loaded repeatably in local automation scripts.
+
+### Milestone B: Failure Taxonomy and Diagnostics
+
+Scope:
+- Normalize fetch failure classes (network, timeout, non-html, blocked, parse failure).
+- Emit richer structured fields in JSONL (`error_class`, `http_status`, `retry_count` where available).
+
+Acceptance criteria:
+- Failed URLs are easier to triage from logs without rerunning manually.
+- Summary outputs distinguish dominant failure causes.
+
+### Milestone C: CLI Integration Safety Net
+
+Scope:
+- Add integration-style tests for command parsing and dispatch.
+- Cover mutually exclusive and invalid flag combinations.
+
+Acceptance criteria:
+- CLI regressions are caught before release.
+- New flags can be added safely with confidence.
+
+### Milestone D: Observability Utilities
+
+Scope:
+- Add script/notebook examples that aggregate JSONL runs (success rate, top failing domains, trend over time).
+
+Acceptance criteria:
+- Operator can answer "what broke this week?" quickly from logs.
+
+### Milestone E: LLM Summarization Productionization
+
+Scope:
+- Version prompts and model choices for repeatable behavior.
+- Add LLM quality checks (schema validity, category sanity, summary length guardrails).
+- Improve fallback/retry behavior for API failures and rate limits.
+- Add cost/latency controls (input truncation/token budgeting, timeout policy).
+- Add evaluation fixtures for summary/category quality checks over a representative sample.
+
+Acceptance criteria:
+- LLM path is stable enough for routine use with predictable failure behavior.
+- Quality regressions are detectable through tests/fixtures.
+- Run logs expose enough metadata to debug LLM outcomes quickly.
+
+## Immediate Next Tasks
+
+1. Add first pass failure taxonomy fields to `url_processed` events.
+2. Add one integration test module for CLI dispatch and validation paths.
+3. Define prompt/model versioning and baseline evaluation fixtures for summarization.
