@@ -73,4 +73,4 @@ Acceptance criteria:
 
 1. Add first pass failure taxonomy fields to `url_processed` events.
 2. Add one integration test module for CLI dispatch and validation paths.
-3. Define prompt/model versioning and baseline evaluation fixtures for summarization.
+3. Expand summarizer fixture set and add prompt/model version markers to evaluation outputs.

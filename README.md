@@ -132,6 +132,18 @@ python -m pytest
 Notes:
 - Tests create a temporary `.test_tmp` directory in the repo (gitignored).
 
+## Summarizer Evaluation
+
+Fixture-based summarizer evaluation is available via:
+```bash
+python -m observability.eval_summarizer --mode stub --fixtures eval\\fixtures.jsonl
+```
+
+To evaluate the OpenAI path directly:
+```bash
+python -m observability.eval_summarizer --mode openai --fixtures eval\\fixtures.jsonl --model gpt-4o-mini
+```
+
 ## Optional LLM Summarizer
 
 Set `OPENAI_API_KEY` to enable OpenAI-backed summaries. Optionally set `OPENAI_MODEL`

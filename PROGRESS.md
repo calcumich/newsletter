@@ -47,6 +47,7 @@ Done:
 - `refresh` supports preset filters (`--failed-only`, `--ok-only`, `--stale-ok`).
 - `process-links` supports dry-run mode.
 - Structured JSONL event logging for `ingest`, `process-links`, and `refresh`.
+- Summarizer evaluation scaffold (`eval/fixtures.jsonl`, `observability/eval_summarizer.py`).
 - Default CLI behavior runs `ingest` when no subcommand is provided.
 - Redirect resolution for canonical URLs (optional via `--resolve-redirects`).
 
