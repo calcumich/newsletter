@@ -18,6 +18,10 @@ Fetch article pages and write article notes:
 ```bash
 python run.py process-links --db newsletter.db --vault "C:\\Path\\To\\Repo\\vault" --max-links 25
 ```
+Preview `process-links` candidates without changing anything:
+```bash
+python run.py process-links --db newsletter.db --max-links 25 --dry-run
+```
 
 Backfill redirect URLs (optional):
 ```bash
@@ -31,6 +35,10 @@ python run.py refresh --db newsletter.db --vault "C:\\Path\\To\\Repo\\vault" --o
 Preview refresh candidates without changing anything:
 ```bash
 python run.py refresh --db newsletter.db --vault "C:\\Path\\To\\Repo\\vault" --older-than-days 30 --statuses "ok,fail" --dry-run
+```
+Refresh only specific sources/categories:
+```bash
+python run.py refresh --db newsletter.db --vault "C:\\Path\\To\\Repo\\vault" --older-than-days 30 --domains "example.com,news.ycombinator.com" --categories "Dev Tools,Security"
 ```
 
 ## Project structure (high level)

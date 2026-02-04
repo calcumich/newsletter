@@ -152,17 +152,23 @@ def process_links(
     vault_path: str,
     articles_subdir: str,
     max_links: int,
+    dry_run: bool,
     fetch_timeout: int,
     fetch_retries: int,
     fetch_rate_limit: float,
     fetch_summary_json: str,
 ) -> None:
-    if not vault_path:
+    if not dry_run and not vault_path:
         raise RuntimeError("Vault path is required for process-links.")
     conn = init_db(db_path)
     urls = get_unprocessed_links(conn, max_links)
     if not urls:
         print("No unprocessed links.")
+        return
+    if dry_run:
+        print(f"[process-dry-run] unprocessed links: {len(urls)}")
+        for url in urls:
+            print(f"[process-dry-run] {url}")
         return
     today = time.strftime("%Y-%m-%d")
     total = 0
@@ -281,6 +287,8 @@ def refresh_links(
     max_links: int,
     older_than_days: int,
     statuses: Optional[list[str]],
+    domains: Optional[list[str]],
+    categories: Optional[list[str]],
     dry_run: bool,
     fetch_timeout: int,
     fetch_retries: int,
@@ -295,6 +303,8 @@ def refresh_links(
         limit=max_links,
         older_than_days=older_than_days,
         statuses=statuses,
+        domains=domains,
+        categories=categories,
     )
     if not urls:
         print("No links eligible for refresh.")
@@ -582,6 +592,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Write fetch summary JSON to this path (optional)",
     )
+    process_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show unprocessed links without fetching or writing",
+    )
 
     backfill_parser = subparsers.add_parser(
         "backfill-redirects",
@@ -634,6 +649,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--statuses",
         default="",
         help="Optional comma-separated fetch statuses to include (e.g. ok,fail,http_403)",
+    )
+    refresh_parser.add_argument(
+        "--domains",
+        default="",
+        help="Optional comma-separated domains to include (e.g. example.com,news.ycombinator.com)",
+    )
+    refresh_parser.add_argument(
+        "--categories",
+        default="",
+        help="Optional comma-separated categories to include (e.g. Dev Tools,Security)",
     )
     refresh_parser.add_argument(
         "--dry-run",
@@ -700,6 +725,7 @@ def main(beautiful_soup_available: bool) -> None:
             vault_path=args.vault,
             articles_subdir=args.articles_dir,
             max_links=args.max_links,
+            dry_run=args.dry_run,
             fetch_timeout=args.fetch_timeout,
             fetch_retries=args.fetch_retries,
             fetch_rate_limit=args.fetch_rate_limit,
@@ -717,6 +743,8 @@ def main(beautiful_soup_available: bool) -> None:
         return
     if args.command == "refresh":
         statuses = [s.strip() for s in args.statuses.split(",") if s.strip()]
+        domains = [d.strip().lower() for d in args.domains.split(",") if d.strip()]
+        categories = [c.strip() for c in args.categories.split(",") if c.strip()]
         refresh_links(
             db_path=args.db,
             vault_path=args.vault,
@@ -724,6 +752,8 @@ def main(beautiful_soup_available: bool) -> None:
             max_links=args.max_links,
             older_than_days=args.older_than_days,
             statuses=statuses or None,
+            domains=domains or None,
+            categories=categories or None,
             dry_run=args.dry_run,
             fetch_timeout=args.fetch_timeout,
             fetch_retries=args.fetch_retries,

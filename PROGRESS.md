@@ -23,10 +23,13 @@
   - `python run.py ingest --label "<Label>" --since-days 7 --max 20 --db newsletter.db --vault "C:\Path\To\Repo\vault"`
 - Process links:
   - `python run.py process-links --db newsletter.db --vault "C:\Path\To\Repo\vault" --max-links 25`
+  - Dry run: `python run.py process-links --db newsletter.db --max-links 25 --dry-run`
 - Backfill redirect URLs:
   - `python run.py backfill-redirects --db newsletter.db --max-links 200 --redirect-rate-limit 0.2`
 - Refresh old links:
   - `python run.py refresh --db newsletter.db --vault "C:\Path\To\Repo\vault" --older-than-days 30 --max-links 25`
+  - Dry run: `python run.py refresh --db newsletter.db --vault "C:\Path\To\Repo\vault" --older-than-days 30 --statuses "ok,fail" --dry-run`
+  - Filtered: `python run.py refresh --db newsletter.db --vault "C:\Path\To\Repo\vault" --older-than-days 30 --domains "example.com" --categories "Dev Tools"`
 
 ## What's done vs pending
 
@@ -37,15 +40,17 @@ Done:
 - Summary output normalization with category validation and `needs-review` fallback tagging.
 - Issue note replacement of matching external links with internal Obsidian links.
 - `refresh` command to reprocess previously processed links by age/status.
+- `refresh` supports domain/category filters and dry-run mode.
+- `process-links` supports dry-run mode.
 - Default CLI behavior runs `ingest` when no subcommand is provided.
 - Redirect resolution for canonical URLs (optional via `--resolve-redirects`).
 
 Pending / improvements:
 - Add retry/backoff and better failure logging for fetches (already partially done).
 - Add rate limiting for link processing (already partially done).
-- Add richer filters for `refresh` (e.g., by domain/category).
+- Add preset filter aliases for `refresh` (e.g., `--failed-only`, `--security-only`).
 
 ## Next steps (recommended)
-1. Add richer `refresh` filters (domain/category/status presets beyond simple list matching).
+1. Add preset filters for `refresh` and optionally save/load filter profiles.
 2. Strengthen fetch failure taxonomy/logging for easier troubleshooting.
 3. Add integration tests around CLI subcommands and note mutation behavior.

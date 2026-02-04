@@ -135,6 +135,8 @@ def get_links_for_refresh(
     limit: int,
     older_than_days: int,
     statuses: Optional[Iterable[str]] = None,
+    domains: Optional[Iterable[str]] = None,
+    categories: Optional[Iterable[str]] = None,
 ) -> list[str]:
     cutoff = int(time.time()) - max(0, older_than_days) * 86400
     query = """
@@ -149,6 +151,16 @@ def get_links_for_refresh(
         placeholders = ",".join(["?"] * len(status_list))
         query += f" AND fetch_status IN ({placeholders})"
         params.extend(status_list)
+    domain_list = [d.lower() for d in (domains or []) if d]
+    if domain_list:
+        placeholders = ",".join(["?"] * len(domain_list))
+        query += f" AND lower(domain) IN ({placeholders})"
+        params.extend(domain_list)
+    category_list = [c.lower() for c in (categories or []) if c]
+    if category_list:
+        placeholders = ",".join(["?"] * len(category_list))
+        query += f" AND lower(COALESCE(category, '')) IN ({placeholders})"
+        params.extend(category_list)
     query += " ORDER BY processed_at ASC LIMIT ?"
     params.append(limit)
     rows = conn.execute(query, params).fetchall()

@@ -456,6 +456,34 @@ def test_get_links_for_refresh_filters_by_age_and_status():
     assert urls == ["https://example.com/old-ok"]
 
 
+def test_get_links_for_refresh_filters_by_domain_and_category():
+    conn = init_db(":memory:")
+    old = int(time.time()) - 40 * 86400
+    conn.execute(
+        """
+        INSERT INTO links (url_canonical, first_seen_message_id, domain, category, discovered_at, processed_at, fetch_status)
+        VALUES ('https://a.com/one', 'msg', 'a.com', 'Dev Tools', 1, ?, 'ok')
+        """,
+        (old,),
+    )
+    conn.execute(
+        """
+        INSERT INTO links (url_canonical, first_seen_message_id, domain, category, discovered_at, processed_at, fetch_status)
+        VALUES ('https://b.com/two', 'msg', 'b.com', 'Security', 1, ?, 'ok')
+        """,
+        (old,),
+    )
+    conn.commit()
+    urls = get_links_for_refresh(
+        conn,
+        limit=10,
+        older_than_days=30,
+        domains=["A.COM"],
+        categories=["dev tools"],
+    )
+    assert urls == ["https://a.com/one"]
+
+
 def test_process_links_writes_notes_and_updates_db(monkeypatch):
     base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".test_tmp"))
     try:
@@ -480,6 +508,7 @@ def test_process_links_writes_notes_and_updates_db(monkeypatch):
             vault_path=vault,
             articles_subdir=os.path.join("Newsletters", "Articles"),
             max_links=10,
+            dry_run=False,
             fetch_timeout=5,
             fetch_retries=0,
             fetch_rate_limit=0.0,
@@ -493,6 +522,44 @@ def test_process_links_writes_notes_and_updates_db(monkeypatch):
         assert row[1]
         assert row[2]
         assert os.path.exists(row[2])
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_process_links_dry_run_does_not_fetch(monkeypatch):
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".test_tmp"))
+    try:
+        os.makedirs(base, exist_ok=True)
+        db_path = os.path.join(base, "process_dry_run.db")
+        conn = init_db(db_path)
+        conn.execute(
+            """
+            INSERT INTO links (url_canonical, first_seen_message_id, domain, discovered_at)
+            VALUES ('https://example.com/a', 'msg', 'example.com', 1)
+            """
+        )
+        conn.commit()
+
+        def fake_fetch_article(_url, **_kwargs):
+            raise AssertionError("fetch_article should not be called in dry-run mode")
+
+        monkeypatch.setattr("newsletter.cli.fetch_article", fake_fetch_article)
+        process_links(
+            db_path=db_path,
+            vault_path="",
+            articles_subdir=os.path.join("Newsletters", "Articles"),
+            max_links=10,
+            dry_run=True,
+            fetch_timeout=5,
+            fetch_retries=0,
+            fetch_rate_limit=0.0,
+            fetch_summary_json="",
+        )
+        row = conn.execute(
+            "SELECT processed_at, summary, note_path FROM links WHERE url_canonical = ?",
+            ("https://example.com/a",),
+        ).fetchone()
+        assert row == (None, None, None)
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
@@ -525,6 +592,8 @@ def test_refresh_links_reprocesses_old_items(monkeypatch):
             max_links=10,
             older_than_days=30,
             statuses=["ok"],
+            domains=None,
+            categories=None,
             dry_run=False,
             fetch_timeout=5,
             fetch_retries=0,
@@ -572,6 +641,8 @@ def test_refresh_links_dry_run_does_not_fetch(monkeypatch):
             max_links=10,
             older_than_days=30,
             statuses=["ok"],
+            domains=None,
+            categories=None,
             dry_run=True,
             fetch_timeout=5,
             fetch_retries=0,
