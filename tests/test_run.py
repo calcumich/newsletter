@@ -525,6 +525,7 @@ def test_refresh_links_reprocesses_old_items(monkeypatch):
             max_links=10,
             older_than_days=30,
             statuses=["ok"],
+            dry_run=False,
             fetch_timeout=5,
             fetch_retries=0,
             fetch_rate_limit=0.0,
@@ -539,6 +540,52 @@ def test_refresh_links_reprocesses_old_items(monkeypatch):
         assert row[2]
         assert os.path.exists(row[2])
         assert row[3] > old
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_refresh_links_dry_run_does_not_fetch(monkeypatch):
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".test_tmp"))
+    try:
+        os.makedirs(base, exist_ok=True)
+        vault = os.path.join(base, "vault")
+        db_path = os.path.join(base, "refresh_dry_run.db")
+        conn = init_db(db_path)
+        old = int(time.time()) - 40 * 86400
+        conn.execute(
+            """
+            INSERT INTO links (url_canonical, first_seen_message_id, domain, discovered_at, processed_at, fetch_status)
+            VALUES ('https://example.com/a', 'msg', 'example.com', 1, ?, 'ok')
+            """,
+            (old,),
+        )
+        conn.commit()
+
+        def fake_fetch_article(_url, **_kwargs):
+            raise AssertionError("fetch_article should not be called in dry-run mode")
+
+        monkeypatch.setattr("newsletter.cli.fetch_article", fake_fetch_article)
+        refresh_links(
+            db_path=db_path,
+            vault_path=vault,
+            articles_subdir=os.path.join("Newsletters", "Articles"),
+            max_links=10,
+            older_than_days=30,
+            statuses=["ok"],
+            dry_run=True,
+            fetch_timeout=5,
+            fetch_retries=0,
+            fetch_rate_limit=0.0,
+            fetch_summary_json="",
+        )
+        row = conn.execute(
+            "SELECT title, summary, note_path, processed_at FROM links WHERE url_canonical = ?",
+            ("https://example.com/a",),
+        ).fetchone()
+        assert row[0] is None
+        assert row[1] is None
+        assert row[2] is None
+        assert row[3] == old
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

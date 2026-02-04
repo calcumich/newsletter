@@ -281,6 +281,7 @@ def refresh_links(
     max_links: int,
     older_than_days: int,
     statuses: Optional[list[str]],
+    dry_run: bool,
     fetch_timeout: int,
     fetch_retries: int,
     fetch_rate_limit: float,
@@ -297,6 +298,11 @@ def refresh_links(
     )
     if not urls:
         print("No links eligible for refresh.")
+        return
+    if dry_run:
+        print(f"[refresh-dry-run] eligible links: {len(urls)}")
+        for url in urls:
+            print(f"[refresh-dry-run] {url}")
         return
 
     today = time.strftime("%Y-%m-%d")
@@ -630,6 +636,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional comma-separated fetch statuses to include (e.g. ok,fail,http_403)",
     )
     refresh_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show links eligible for refresh without fetching or writing",
+    )
+    refresh_parser.add_argument(
         "--fetch-timeout",
         type=int,
         default=15,
@@ -713,6 +724,7 @@ def main(beautiful_soup_available: bool) -> None:
             max_links=args.max_links,
             older_than_days=args.older_than_days,
             statuses=statuses or None,
+            dry_run=args.dry_run,
             fetch_timeout=args.fetch_timeout,
             fetch_retries=args.fetch_retries,
             fetch_rate_limit=args.fetch_rate_limit,

@@ -28,6 +28,10 @@ Refresh old processed links (optional):
 ```bash
 python run.py refresh --db newsletter.db --vault "C:\\Path\\To\\Repo\\vault" --older-than-days 30 --max-links 25
 ```
+Preview refresh candidates without changing anything:
+```bash
+python run.py refresh --db newsletter.db --vault "C:\\Path\\To\\Repo\\vault" --older-than-days 30 --statuses "ok,fail" --dry-run
+```
 
 ## Project structure (high level)
 

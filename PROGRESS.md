@@ -43,9 +43,9 @@ Done:
 Pending / improvements:
 - Add retry/backoff and better failure logging for fetches (already partially done).
 - Add rate limiting for link processing (already partially done).
-- Add richer filters for `refresh` (e.g., by domain/category and dry-run mode).
+- Add richer filters for `refresh` (e.g., by domain/category).
 
 ## Next steps (recommended)
-1. Add richer `refresh` filters (domain/category/status presets) plus a dry-run mode.
+1. Add richer `refresh` filters (domain/category/status presets beyond simple list matching).
 2. Strengthen fetch failure taxonomy/logging for easier troubleshooting.
 3. Add integration tests around CLI subcommands and note mutation behavior.
