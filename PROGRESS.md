@@ -25,6 +25,8 @@
   - `python run.py process-links --db newsletter.db --vault "C:\Path\To\Repo\vault" --max-links 25`
 - Backfill redirect URLs:
   - `python run.py backfill-redirects --db newsletter.db --max-links 200 --redirect-rate-limit 0.2`
+- Refresh old links:
+  - `python run.py refresh --db newsletter.db --vault "C:\Path\To\Repo\vault" --older-than-days 30 --max-links 25`
 
 ## What's done vs pending
 
@@ -32,17 +34,18 @@ Done:
 - Milestone 1 end-to-end flow with issue notes.
 - Milestone 2 core pipeline (fetch/extract/summarize/write article notes).
 - Issue note linking to article notes.
+- Summary output normalization with category validation and `needs-review` fallback tagging.
+- Issue note replacement of matching external links with internal Obsidian links.
+- `refresh` command to reprocess previously processed links by age/status.
 - Default CLI behavior runs `ingest` when no subcommand is provided.
 - Redirect resolution for canonical URLs (optional via `--resolve-redirects`).
 
 Pending / improvements:
-- Enforce category set in LLM schema and validate outputs.
-- Replace external links in issue notes with internal links (instead of appending).
 - Add retry/backoff and better failure logging for fetches (already partially done).
 - Add rate limiting for link processing (already partially done).
-- Add a `refresh` mode to reprocess old links on demand.
+- Add richer filters for `refresh` (e.g., by domain/category and dry-run mode).
 
 ## Next steps (recommended)
-1. Enforce category validation + fallback tag (`needs-review`).
-2. Improve issue note updates to replace external links with internal links.
-3. Add a `refresh` mode to reprocess old links on demand.
+1. Add richer `refresh` filters (domain/category/status presets) plus a dry-run mode.
+2. Strengthen fetch failure taxonomy/logging for easier troubleshooting.
+3. Add integration tests around CLI subcommands and note mutation behavior.

@@ -24,6 +24,11 @@ Backfill redirect URLs (optional):
 python run.py backfill-redirects --db newsletter.db --max-links 200 --redirect-rate-limit 0.2
 ```
 
+Refresh old processed links (optional):
+```bash
+python run.py refresh --db newsletter.db --vault "C:\\Path\\To\\Repo\\vault" --older-than-days 30 --max-links 25
+```
+
 ## Project structure (high level)
 
 - `run.py`: entrypoint CLI (will remain as thin wrapper).

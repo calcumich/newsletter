@@ -129,6 +129,32 @@ def get_unprocessed_links(conn: sqlite3.Connection, limit: int) -> list[str]:
     return [row[0] for row in rows]
 
 
+def get_links_for_refresh(
+    conn: sqlite3.Connection,
+    *,
+    limit: int,
+    older_than_days: int,
+    statuses: Optional[Iterable[str]] = None,
+) -> list[str]:
+    cutoff = int(time.time()) - max(0, older_than_days) * 86400
+    query = """
+        SELECT url_canonical
+        FROM links
+        WHERE processed_at IS NOT NULL
+          AND processed_at <= ?
+    """
+    params: list[object] = [cutoff]
+    status_list = [s for s in (statuses or []) if s]
+    if status_list:
+        placeholders = ",".join(["?"] * len(status_list))
+        query += f" AND fetch_status IN ({placeholders})"
+        params.extend(status_list)
+    query += " ORDER BY processed_at ASC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    return [row[0] for row in rows]
+
+
 def mark_link_processed(
     conn: sqlite3.Connection,
     url: str,

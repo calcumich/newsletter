@@ -3,7 +3,7 @@ import sqlite3
 import time
 import shutil
 
-from newsletter.db import ensure_link_columns, init_db, mark_link_processed
+from newsletter.db import ensure_link_columns, get_links_for_refresh, init_db, mark_link_processed
 from newsletter.links import (
     canonicalize_url,
     extract_and_store_links,
@@ -23,11 +23,12 @@ from newsletter.obsidian import (
 from newsletter.fetch import extract_main_text, fetch_article
 from newsletter.summarize import (
     extract_output_text,
+    normalize_summary_output,
     summarize_text,
     summarize_text_stub,
 )
 from newsletter.gmail import GmailMessage
-from newsletter.cli import backfill_redirects, process_links
+from newsletter.cli import backfill_redirects, process_links, refresh_links
 
 
 def test_canonicalize_url_strips_tracking_and_normalizes():
@@ -230,6 +231,37 @@ def test_update_issue_note_with_article_link():
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_update_issue_note_replaces_external_markdown_link():
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".test_tmp"))
+    try:
+        os.makedirs(base, exist_ok=True)
+        vault = os.path.join(base, "vault")
+        issue_path = os.path.join(vault, "Newsletters", "Issues", "2026", "01")
+        os.makedirs(issue_path, exist_ok=True)
+        issue_file = os.path.join(issue_path, "issue.md")
+        with open(issue_file, "w", encoding="utf-8") as f:
+            f.write("# Links\n\n- [Alpha](https://example.com/a)\n")
+        article_path = os.path.join(
+            vault, "Newsletters", "Articles", "Other", "2026", "article.md"
+        )
+        os.makedirs(os.path.dirname(article_path), exist_ok=True)
+        with open(article_path, "w", encoding="utf-8") as f:
+            f.write("content")
+        update_issue_note_with_article_link(
+            issue_file,
+            article_path,
+            vault,
+            "Article Title",
+            source_url="https://example.com/a",
+        )
+        content = open(issue_file, "r", encoding="utf-8").read()
+        assert "[Alpha](https://example.com/a)" not in content
+        assert "[[Newsletters/Articles/Other/2026/article|Alpha]]" in content
+        assert "## Articles" not in content
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_ensure_link_columns_idempotent():
     conn = sqlite3.connect(":memory:")
     conn.execute(
@@ -288,6 +320,39 @@ def test_summarize_text_falls_back_without_key(monkeypatch):
     )
     assert result["summary"]
     assert result["category"] == "Other"
+    assert "needs-review" in result["tags"]
+
+
+def test_normalize_summary_output_validates_category_and_tags():
+    result = normalize_summary_output(
+        {
+            "summary": "  Summary. ",
+            "bullets": [" One ", "", "Two"],
+            "category": "NotARealCategory",
+            "tags": ["AI", "ai", " ", "news"],
+            "confidence": 0.9,
+            "paywall_or_blocked": False,
+        }
+    )
+    assert result["summary"] == "Summary."
+    assert result["bullets"] == ["One", "Two"]
+    assert result["category"] == "Other"
+    assert result["tags"] == ["AI", "news", "needs-review"]
+
+
+def test_normalize_summary_output_low_confidence_marks_review():
+    result = normalize_summary_output(
+        {
+            "summary": "Summary.",
+            "bullets": ["One"],
+            "category": "Dev Tools",
+            "tags": ["automation"],
+            "confidence": 0.2,
+            "paywall_or_blocked": False,
+        }
+    )
+    assert result["category"] == "Dev Tools"
+    assert "needs-review" in result["tags"]
 
 
 def test_extract_main_text_basic():
@@ -349,6 +414,48 @@ def test_mark_link_processed_updates_optional_fields():
     assert row == ("Summary", "Other", '["a", "b"]', "vault/path.md")
 
 
+def test_get_links_for_refresh_filters_by_age_and_status():
+    conn = init_db(":memory:")
+    now = int(time.time())
+    old = now - 40 * 86400
+    recent = now - 5 * 86400
+    conn.execute(
+        """
+        INSERT INTO links (url_canonical, first_seen_message_id, domain, discovered_at, processed_at, fetch_status)
+        VALUES ('https://example.com/old-ok', 'msg', 'example.com', 1, ?, 'ok')
+        """,
+        (old,),
+    )
+    conn.execute(
+        """
+        INSERT INTO links (url_canonical, first_seen_message_id, domain, discovered_at, processed_at, fetch_status)
+        VALUES ('https://example.com/recent-ok', 'msg', 'example.com', 1, ?, 'ok')
+        """,
+        (recent,),
+    )
+    conn.execute(
+        """
+        INSERT INTO links (url_canonical, first_seen_message_id, domain, discovered_at, processed_at, fetch_status)
+        VALUES ('https://example.com/old-fail', 'msg', 'example.com', 1, ?, 'fail')
+        """,
+        (old,),
+    )
+    conn.execute(
+        """
+        INSERT INTO links (url_canonical, first_seen_message_id, domain, discovered_at)
+        VALUES ('https://example.com/unprocessed', 'msg', 'example.com', 1)
+        """
+    )
+    conn.commit()
+    urls = get_links_for_refresh(
+        conn,
+        limit=10,
+        older_than_days=30,
+        statuses=["ok"],
+    )
+    assert urls == ["https://example.com/old-ok"]
+
+
 def test_process_links_writes_notes_and_updates_db(monkeypatch):
     base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".test_tmp"))
     try:
@@ -386,6 +493,52 @@ def test_process_links_writes_notes_and_updates_db(monkeypatch):
         assert row[1]
         assert row[2]
         assert os.path.exists(row[2])
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_refresh_links_reprocesses_old_items(monkeypatch):
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".test_tmp"))
+    try:
+        os.makedirs(base, exist_ok=True)
+        vault = os.path.join(base, "vault")
+        db_path = os.path.join(base, "refresh.db")
+        conn = init_db(db_path)
+        old = int(time.time()) - 40 * 86400
+        conn.execute(
+            """
+            INSERT INTO links (url_canonical, first_seen_message_id, domain, discovered_at, processed_at, fetch_status)
+            VALUES ('https://example.com/a', 'msg', 'example.com', 1, ?, 'ok')
+            """,
+            (old,),
+        )
+        conn.commit()
+
+        def fake_fetch_article(_url, **_kwargs):
+            return "ok", "Refreshed Title", "First sentence. Second sentence."
+
+        monkeypatch.setattr("newsletter.cli.fetch_article", fake_fetch_article)
+        refresh_links(
+            db_path=db_path,
+            vault_path=vault,
+            articles_subdir=os.path.join("Newsletters", "Articles"),
+            max_links=10,
+            older_than_days=30,
+            statuses=["ok"],
+            fetch_timeout=5,
+            fetch_retries=0,
+            fetch_rate_limit=0.0,
+            fetch_summary_json="",
+        )
+        row = conn.execute(
+            "SELECT title, summary, note_path, processed_at FROM links WHERE url_canonical = ?",
+            ("https://example.com/a",),
+        ).fetchone()
+        assert row[0] == "Refreshed Title"
+        assert row[1]
+        assert row[2]
+        assert os.path.exists(row[2])
+        assert row[3] > old
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

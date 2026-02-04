@@ -125,6 +125,7 @@ def update_issue_note_with_article_link(
     article_path: str,
     vault_path: str,
     title: str,
+    source_url: Optional[str] = None,
 ) -> None:
     if not os.path.exists(issue_note_path):
         return
@@ -133,6 +134,30 @@ def update_issue_note_with_article_link(
         content = f.read()
     if link in content:
         return
+    if source_url:
+        replaced = False
+
+        def replace_markdown_link(match):
+            nonlocal replaced
+            label = (match.group(1) or "").strip()
+            display = title
+            if label and label.lower() != source_url.lower():
+                display = label
+            replaced = True
+            return make_obsidian_link(article_path, vault_path, display)
+
+        markdown_pattern = rf"\[([^\]]*)\]\(\s*{re.escape(source_url)}\s*\)"
+        content = re.sub(markdown_pattern, replace_markdown_link, content)
+
+        bare_url_pattern = rf"(?<!\]\()(?<!\()(?<!\w){re.escape(source_url)}(?!\w)"
+        if re.search(bare_url_pattern, content):
+            replaced = True
+            content = re.sub(bare_url_pattern, link, content)
+
+        if replaced:
+            with open(issue_note_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            return
     section_header = "\n## Articles\n"
     if "## Articles" not in content:
         content = content.rstrip() + section_header

@@ -5,7 +5,14 @@ import time
 from typing import Optional
 from urllib.parse import urlsplit
 
-from newsletter.db import get_unprocessed_links, init_db, mark_link_processed, store_message, update_issue_note_path
+from newsletter.db import (
+    get_links_for_refresh,
+    get_unprocessed_links,
+    init_db,
+    mark_link_processed,
+    store_message,
+    update_issue_note_path,
+)
 from newsletter.fetch import fetch_article
 from newsletter.gmail import get_gmail_service, resolve_label_id, list_messages, get_message
 from newsletter.links import canonicalize_url, extract_and_store_links, resolve_redirect_url
@@ -228,6 +235,7 @@ def process_links(
                     note_path,
                     vault_path,
                     note_title,
+                    source_url=url,
                 )
         else:
             mark_link_processed(conn, url, status, title, content_hash)
@@ -254,6 +262,141 @@ def process_links(
     if fetch_summary_json:
         summary = {
             "type": "fetch_summary",
+            "total": total,
+            "status_counts": status_counts,
+            "domain_counts_top10": dict(
+                sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+            ),
+            "failure_domain_counts_top10": dict(top_failures) if failure_domain_counts else {},
+            "timestamp": int(time.time()),
+        }
+        with open(fetch_summary_json, "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2)
+
+
+def refresh_links(
+    db_path: str,
+    vault_path: str,
+    articles_subdir: str,
+    max_links: int,
+    older_than_days: int,
+    statuses: Optional[list[str]],
+    fetch_timeout: int,
+    fetch_retries: int,
+    fetch_rate_limit: float,
+    fetch_summary_json: str,
+) -> None:
+    if not vault_path:
+        raise RuntimeError("Vault path is required for refresh.")
+    conn = init_db(db_path)
+    urls = get_links_for_refresh(
+        conn,
+        limit=max_links,
+        older_than_days=older_than_days,
+        statuses=statuses,
+    )
+    if not urls:
+        print("No links eligible for refresh.")
+        return
+
+    today = time.strftime("%Y-%m-%d")
+    total = 0
+    status_counts: dict[str, int] = {}
+    domain_counts: dict[str, int] = {}
+    failure_domain_counts: dict[str, int] = {}
+    for url in urls:
+        total += 1
+        domain = urlsplit(url).netloc
+        domain_counts[domain] = domain_counts.get(domain, 0) + 1
+        print(f"[refresh] {url}")
+        status, title, text = fetch_article(
+            url,
+            timeout=fetch_timeout,
+            retries=fetch_retries,
+        )
+        print(f"[refresh] status={status} title={title or ''}")
+        content_hash = hash_text(text) if text else None
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if status != "ok":
+            failure_domain_counts[domain] = failure_domain_counts.get(domain, 0) + 1
+        if status == "ok" and text:
+            summary_data = summarize_text(
+                text,
+                title=title,
+                url=url,
+                domain=domain,
+            )
+            summary = summary_data.get("summary", "")
+            bullets = summary_data.get("bullets", [])
+            category = summary_data.get("category", "Other")
+            tags = summary_data.get("tags", [])
+            note_title = title or domain or "Article"
+            note_path = write_article_note(
+                vault_path,
+                articles_subdir,
+                title=note_title,
+                url=url,
+                date_iso=today,
+                source=domain or "unknown",
+                category=category,
+                tags=tags,
+                summary=summary,
+                bullets=bullets,
+            )
+            mark_link_processed(
+                conn,
+                url,
+                status,
+                title,
+                content_hash,
+                summary=summary,
+                category=category,
+                tags=tags,
+                note_path=note_path,
+            )
+            row = conn.execute(
+                """
+                SELECT gm.issue_note_path
+                FROM links l
+                JOIN gmail_messages gm
+                  ON gm.message_id = l.first_seen_message_id
+                WHERE l.url_canonical = ?
+                """,
+                (url,),
+            ).fetchone()
+            if row and row[0]:
+                update_issue_note_with_article_link(
+                    row[0],
+                    note_path,
+                    vault_path,
+                    note_title,
+                    source_url=url,
+                )
+        else:
+            mark_link_processed(conn, url, status, title, content_hash)
+        if fetch_rate_limit > 0:
+            time.sleep(fetch_rate_limit)
+    conn.commit()
+    print("\n[refresh-summary] total:", total)
+    if status_counts:
+        print("[refresh-summary] status counts:")
+        for key in sorted(status_counts):
+            print(f"  {key}: {status_counts[key]}")
+    if domain_counts:
+        top_domains = sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        print("[refresh-summary] top domains:")
+        for domain, count in top_domains:
+            print(f"  {domain}: {count}")
+    if failure_domain_counts:
+        top_failures = sorted(
+            failure_domain_counts.items(), key=lambda x: x[1], reverse=True
+        )[:10]
+        print("[refresh-summary] top failing domains:")
+        for domain, count in top_failures:
+            print(f"  {domain}: {count}")
+    if fetch_summary_json:
+        summary = {
+            "type": "refresh_summary",
             "total": total,
             "status_counts": status_counts,
             "domain_counts_top10": dict(
@@ -459,6 +602,57 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds to sleep between redirect checks (0 disables)",
     )
 
+    refresh_parser = subparsers.add_parser(
+        "refresh",
+        help="Reprocess previously processed links older than a threshold",
+    )
+    refresh_parser.add_argument("--db", default=DEFAULT_DB, help="SQLite DB path")
+    refresh_parser.add_argument(
+        "--vault",
+        default="",
+        help="Path to Obsidian vault (article notes written under this folder)",
+    )
+    refresh_parser.add_argument(
+        "--articles-dir",
+        default=os.path.join("Newsletters", "Articles"),
+        help="Subdirectory inside the vault for article notes",
+    )
+    refresh_parser.add_argument("--max-links", type=int, default=25, help="Max links to refresh")
+    refresh_parser.add_argument(
+        "--older-than-days",
+        type=int,
+        default=30,
+        help="Refresh links last processed at least this many days ago",
+    )
+    refresh_parser.add_argument(
+        "--statuses",
+        default="",
+        help="Optional comma-separated fetch statuses to include (e.g. ok,fail,http_403)",
+    )
+    refresh_parser.add_argument(
+        "--fetch-timeout",
+        type=int,
+        default=15,
+        help="Timeout in seconds for article fetches",
+    )
+    refresh_parser.add_argument(
+        "--fetch-retries",
+        type=int,
+        default=2,
+        help="Number of retries for transient fetch failures",
+    )
+    refresh_parser.add_argument(
+        "--fetch-rate-limit",
+        type=float,
+        default=0.0,
+        help="Seconds to sleep between fetches (0 disables)",
+    )
+    refresh_parser.add_argument(
+        "--fetch-summary-json",
+        default="",
+        help="Write refresh summary JSON to this path (optional)",
+    )
+
     return parser
 
 
@@ -508,6 +702,21 @@ def main(beautiful_soup_available: bool) -> None:
             redirect_timeout=args.redirect_timeout,
             redirect_retries=args.redirect_retries,
             redirect_rate_limit=args.redirect_rate_limit,
+        )
+        return
+    if args.command == "refresh":
+        statuses = [s.strip() for s in args.statuses.split(",") if s.strip()]
+        refresh_links(
+            db_path=args.db,
+            vault_path=args.vault,
+            articles_subdir=args.articles_dir,
+            max_links=args.max_links,
+            older_than_days=args.older_than_days,
+            statuses=statuses or None,
+            fetch_timeout=args.fetch_timeout,
+            fetch_retries=args.fetch_retries,
+            fetch_rate_limit=args.fetch_rate_limit,
+            fetch_summary_json=args.fetch_summary_json,
         )
         return
     raise SystemExit("Unknown command")
