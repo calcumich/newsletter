@@ -6,7 +6,7 @@
 - SQLite state to avoid reprocessing.
 - Issue notes written to Obsidian vault with summary counts + links grouped by domain.
 - `process-links` command to fetch articles, extract main text, summarize, and write article notes.
-- Article notes are linked back into issue notes under an "Articles" section.
+- Article notes are linked back into issue notes (matching external links are replaced inline; otherwise links are appended under an "Articles" section).
 - OpenAI-backed summarizer via `OPENAI_API_KEY`, with a stub fallback.
 - Observability tooling: `observability/inspect_examples.py` and `observability/observability_examples.ipynb`.
 - Local `vault/` folder created in-repo and gitignored (optional usage).

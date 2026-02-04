@@ -73,6 +73,50 @@ python run.py refresh --db newsletter.db --vault "C:\\Path\\To\\Repo\\vault" --o
 - `observability/`: notebooks and scripts for inspecting outputs.
 - `tests/`: unit tests.
 
+## CLI reference
+
+### `ingest`
+- Purpose: Pull labeled Gmail messages, extract/store links, and optionally fetch articles.
+- Common flags: `--label`, `--since-days`, `--max`, `--db`, `--vault`, `--resolve-redirects`.
+- Optional outputs: `--fetch-summary-json <path>`, `--log-jsonl <path>`.
+
+### `process-links`
+- Purpose: Process unprocessed links into article notes.
+- Common flags: `--db`, `--vault`, `--articles-dir`, `--max-links`.
+- Safe preview: `--dry-run`.
+- Optional outputs: `--fetch-summary-json <path>`, `--log-jsonl <path>`.
+
+### `refresh`
+- Purpose: Reprocess already processed links using age/status/domain/category filters.
+- Common flags: `--db`, `--vault`, `--older-than-days`, `--max-links`.
+- Filters: `--statuses`, `--domains`, `--categories`.
+- Presets: `--failed-only`, `--ok-only`, `--stale-ok`.
+- Safe preview: `--dry-run`.
+- Optional outputs: `--fetch-summary-json <path>`, `--log-jsonl <path>`.
+
+### `backfill-redirects`
+- Purpose: Resolve and update canonical URLs for already-stored links.
+- Common flags: `--db`, `--max-links`, `--redirect-timeout`, `--redirect-retries`, `--redirect-rate-limit`.
+
+## JSONL events
+
+When `--log-jsonl` is set, commands append one JSON object per line.
+
+- Common event types:
+  - `run_start`
+  - `candidate` (dry-run candidate URL)
+  - `message_processed` (ingest only)
+  - `url_processed` (fetch/process result per URL)
+  - `ingest_summary` (ingest only)
+  - `run_summary`
+- Common fields:
+  - `timestamp`, `event`, `command`
+  - URL-level events include fields like `url`, `domain`, `status`, `title`, `note_path`.
+- Example:
+```json
+{"timestamp":1738675200,"event":"url_processed","command":"process-links","url":"https://example.com/a","domain":"example.com","status":"ok","title":"Example","note_path":"C:\\vault\\Newsletters\\Articles\\Other\\2026\\Example.md"}
+```
+
 ## Tests
 
 Install deps:
