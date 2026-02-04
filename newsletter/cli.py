@@ -28,6 +28,18 @@ def hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def write_jsonl_event(log_jsonl: str, event: dict) -> None:
+    if not log_jsonl:
+        return
+    folder = os.path.dirname(log_jsonl)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    payload = dict(event)
+    payload.setdefault("timestamp", int(time.time()))
+    with open(log_jsonl, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload) + "\n")
+
+
 def ingest(
     label: str,
     max_results: int,
@@ -45,10 +57,21 @@ def ingest(
     redirect_timeout: int,
     redirect_retries: int,
     redirect_rate_limit: float,
+    log_jsonl: str,
     vault_path: Optional[str],
     issues_subdir: str,
     beautiful_soup_available: bool,
 ) -> None:
+    write_jsonl_event(
+        log_jsonl,
+        {
+            "event": "run_start",
+            "command": "ingest",
+            "label": label,
+            "max_results": max_results,
+            "since_days": since_days,
+        },
+    )
     service = get_gmail_service(
         credentials_path,
         token_path,
@@ -66,8 +89,14 @@ def ingest(
     message_refs = list_messages(service, label_id, max_results, since_query)
     if not message_refs:
         print("No messages found.")
+        write_jsonl_event(
+            log_jsonl,
+            {"event": "run_summary", "command": "ingest", "messages_found": 0},
+        )
         return
 
+    processed_messages = 0
+    skipped_messages = 0
     for ref in message_refs:
         message_id = ref["id"]
         exists = conn.execute(
@@ -75,6 +104,7 @@ def ingest(
             (message_id,),
         ).fetchone()
         if exists:
+            skipped_messages += 1
             continue
         msg = get_message(service, message_id)
         store_message(conn, msg)
@@ -88,7 +118,29 @@ def ingest(
         )
         issue_path = write_issue_note(vault_path or "", issues_subdir, msg, links)
         update_issue_note_path(conn, msg.message_id, issue_path)
+        processed_messages += 1
+        write_jsonl_event(
+            log_jsonl,
+            {
+                "event": "message_processed",
+                "command": "ingest",
+                "message_id": msg.message_id,
+                "subject": msg.subject,
+                "links_found": len(links),
+                "issue_note_path": issue_path,
+            },
+        )
     conn.commit()
+    write_jsonl_event(
+        log_jsonl,
+        {
+            "event": "ingest_summary",
+            "command": "ingest",
+            "messages_found": len(message_refs),
+            "messages_processed": processed_messages,
+            "messages_skipped_existing": skipped_messages,
+        },
+    )
 
     if fetch_articles_flag:
         urls = get_unprocessed_links(conn, max_articles)
@@ -112,6 +164,17 @@ def ingest(
             status_counts[status] = status_counts.get(status, 0) + 1
             if status != "ok":
                 failure_domain_counts[domain] = failure_domain_counts.get(domain, 0) + 1
+            write_jsonl_event(
+                log_jsonl,
+                {
+                    "event": "url_processed",
+                    "command": "ingest",
+                    "url": url,
+                    "domain": domain,
+                    "status": status,
+                    "title": title,
+                },
+            )
             if fetch_rate_limit > 0:
                 time.sleep(fetch_rate_limit)
         conn.commit()
@@ -145,6 +208,19 @@ def ingest(
             }
             with open(fetch_summary_json, "w", encoding="utf-8") as f:
                 json.dump(summary, f, indent=2)
+        write_jsonl_event(
+            log_jsonl,
+            {
+                "event": "run_summary",
+                "command": "ingest",
+                "fetch_total": total,
+                "status_counts": status_counts,
+                "domain_counts_top10": dict(
+                    sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+                ),
+                "failure_domain_counts_top10": dict(top_failures) if failure_domain_counts else {},
+            },
+        )
 
 
 def process_links(
@@ -153,22 +229,39 @@ def process_links(
     articles_subdir: str,
     max_links: int,
     dry_run: bool,
+    log_jsonl: str,
     fetch_timeout: int,
     fetch_retries: int,
     fetch_rate_limit: float,
     fetch_summary_json: str,
 ) -> None:
+    write_jsonl_event(
+        log_jsonl,
+        {"event": "run_start", "command": "process-links", "max_links": max_links, "dry_run": dry_run},
+    )
     if not dry_run and not vault_path:
         raise RuntimeError("Vault path is required for process-links.")
     conn = init_db(db_path)
     urls = get_unprocessed_links(conn, max_links)
     if not urls:
         print("No unprocessed links.")
+        write_jsonl_event(
+            log_jsonl,
+            {"event": "run_summary", "command": "process-links", "total_candidates": 0},
+        )
         return
     if dry_run:
         print(f"[process-dry-run] unprocessed links: {len(urls)}")
         for url in urls:
             print(f"[process-dry-run] {url}")
+            write_jsonl_event(
+                log_jsonl,
+                {"event": "candidate", "command": "process-links", "url": url},
+            )
+        write_jsonl_event(
+            log_jsonl,
+            {"event": "run_summary", "command": "process-links", "total_candidates": len(urls), "dry_run": True},
+        )
         return
     today = time.strftime("%Y-%m-%d")
     total = 0
@@ -245,6 +338,19 @@ def process_links(
                 )
         else:
             mark_link_processed(conn, url, status, title, content_hash)
+            note_path = None
+        write_jsonl_event(
+            log_jsonl,
+            {
+                "event": "url_processed",
+                "command": "process-links",
+                "url": url,
+                "domain": domain,
+                "status": status,
+                "title": title,
+                "note_path": note_path,
+            },
+        )
         if fetch_rate_limit > 0:
             time.sleep(fetch_rate_limit)
     conn.commit()
@@ -278,6 +384,19 @@ def process_links(
         }
         with open(fetch_summary_json, "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
+    write_jsonl_event(
+        log_jsonl,
+        {
+            "event": "run_summary",
+            "command": "process-links",
+            "total": total,
+            "status_counts": status_counts,
+            "domain_counts_top10": dict(
+                sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+            ),
+            "failure_domain_counts_top10": dict(top_failures) if failure_domain_counts else {},
+        },
+    )
 
 
 def refresh_links(
@@ -290,11 +409,25 @@ def refresh_links(
     domains: Optional[list[str]],
     categories: Optional[list[str]],
     dry_run: bool,
+    log_jsonl: str,
     fetch_timeout: int,
     fetch_retries: int,
     fetch_rate_limit: float,
     fetch_summary_json: str,
 ) -> None:
+    write_jsonl_event(
+        log_jsonl,
+        {
+            "event": "run_start",
+            "command": "refresh",
+            "max_links": max_links,
+            "older_than_days": older_than_days,
+            "dry_run": dry_run,
+            "statuses": statuses or [],
+            "domains": domains or [],
+            "categories": categories or [],
+        },
+    )
     if not vault_path:
         raise RuntimeError("Vault path is required for refresh.")
     conn = init_db(db_path)
@@ -308,11 +441,23 @@ def refresh_links(
     )
     if not urls:
         print("No links eligible for refresh.")
+        write_jsonl_event(
+            log_jsonl,
+            {"event": "run_summary", "command": "refresh", "total_candidates": 0},
+        )
         return
     if dry_run:
         print(f"[refresh-dry-run] eligible links: {len(urls)}")
         for url in urls:
             print(f"[refresh-dry-run] {url}")
+            write_jsonl_event(
+                log_jsonl,
+                {"event": "candidate", "command": "refresh", "url": url},
+            )
+        write_jsonl_event(
+            log_jsonl,
+            {"event": "run_summary", "command": "refresh", "total_candidates": len(urls), "dry_run": True},
+        )
         return
 
     today = time.strftime("%Y-%m-%d")
@@ -390,6 +535,19 @@ def refresh_links(
                 )
         else:
             mark_link_processed(conn, url, status, title, content_hash)
+            note_path = None
+        write_jsonl_event(
+            log_jsonl,
+            {
+                "event": "url_processed",
+                "command": "refresh",
+                "url": url,
+                "domain": domain,
+                "status": status,
+                "title": title,
+                "note_path": note_path,
+            },
+        )
         if fetch_rate_limit > 0:
             time.sleep(fetch_rate_limit)
     conn.commit()
@@ -423,6 +581,19 @@ def refresh_links(
         }
         with open(fetch_summary_json, "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
+    write_jsonl_event(
+        log_jsonl,
+        {
+            "event": "run_summary",
+            "command": "refresh",
+            "total": total,
+            "status_counts": status_counts,
+            "domain_counts_top10": dict(
+                sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+            ),
+            "failure_domain_counts_top10": dict(top_failures) if failure_domain_counts else {},
+        },
+    )
 
 
 def backfill_redirects(
@@ -531,6 +702,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write fetch summary JSON to this path (optional)",
     )
     ingest_parser.add_argument(
+        "--log-jsonl",
+        default="",
+        help="Append structured run events to this JSONL file (optional)",
+    )
+    ingest_parser.add_argument(
         "--resolve-redirects",
         action="store_true",
         help="Resolve tracking/redirect URLs before storing",
@@ -591,6 +767,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--fetch-summary-json",
         default="",
         help="Write fetch summary JSON to this path (optional)",
+    )
+    process_parser.add_argument(
+        "--log-jsonl",
+        default="",
+        help="Append structured run events to this JSONL file (optional)",
     )
     process_parser.add_argument(
         "--dry-run",
@@ -688,6 +869,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Write refresh summary JSON to this path (optional)",
     )
+    refresh_parser.add_argument(
+        "--log-jsonl",
+        default="",
+        help="Append structured run events to this JSONL file (optional)",
+    )
 
     return parser
 
@@ -710,6 +896,7 @@ def main(beautiful_soup_available: bool) -> None:
             fetch_retries=args.fetch_retries,
             fetch_rate_limit=args.fetch_rate_limit,
             fetch_summary_json=args.fetch_summary_json,
+            log_jsonl=args.log_jsonl,
             resolve_redirects=args.resolve_redirects,
             redirect_timeout=args.redirect_timeout,
             redirect_retries=args.redirect_retries,
@@ -726,6 +913,7 @@ def main(beautiful_soup_available: bool) -> None:
             articles_subdir=args.articles_dir,
             max_links=args.max_links,
             dry_run=args.dry_run,
+            log_jsonl=args.log_jsonl,
             fetch_timeout=args.fetch_timeout,
             fetch_retries=args.fetch_retries,
             fetch_rate_limit=args.fetch_rate_limit,
@@ -755,6 +943,7 @@ def main(beautiful_soup_available: bool) -> None:
             domains=domains or None,
             categories=categories or None,
             dry_run=args.dry_run,
+            log_jsonl=args.log_jsonl,
             fetch_timeout=args.fetch_timeout,
             fetch_retries=args.fetch_retries,
             fetch_rate_limit=args.fetch_rate_limit,

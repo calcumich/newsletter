@@ -24,12 +24,14 @@
 - Process links:
   - `python run.py process-links --db newsletter.db --vault "C:\Path\To\Repo\vault" --max-links 25`
   - Dry run: `python run.py process-links --db newsletter.db --max-links 25 --dry-run`
+  - JSONL log: `python run.py process-links --db newsletter.db --vault "C:\Path\To\Repo\vault" --max-links 25 --log-jsonl logs\process-links.jsonl`
 - Backfill redirect URLs:
   - `python run.py backfill-redirects --db newsletter.db --max-links 200 --redirect-rate-limit 0.2`
 - Refresh old links:
   - `python run.py refresh --db newsletter.db --vault "C:\Path\To\Repo\vault" --older-than-days 30 --max-links 25`
   - Dry run: `python run.py refresh --db newsletter.db --vault "C:\Path\To\Repo\vault" --older-than-days 30 --statuses "ok,fail" --dry-run`
   - Filtered: `python run.py refresh --db newsletter.db --vault "C:\Path\To\Repo\vault" --older-than-days 30 --domains "example.com" --categories "Dev Tools"`
+  - JSONL log: `python run.py refresh --db newsletter.db --vault "C:\Path\To\Repo\vault" --older-than-days 30 --log-jsonl logs\refresh.jsonl`
 
 ## What's done vs pending
 
@@ -42,6 +44,7 @@ Done:
 - `refresh` command to reprocess previously processed links by age/status.
 - `refresh` supports domain/category filters and dry-run mode.
 - `process-links` supports dry-run mode.
+- Structured JSONL event logging for `ingest`, `process-links`, and `refresh`.
 - Default CLI behavior runs `ingest` when no subcommand is provided.
 - Redirect resolution for canonical URLs (optional via `--resolve-redirects`).
 

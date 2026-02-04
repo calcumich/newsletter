@@ -1,4 +1,5 @@
 import os
+import json
 import sqlite3
 import time
 import shutil
@@ -509,6 +510,7 @@ def test_process_links_writes_notes_and_updates_db(monkeypatch):
             articles_subdir=os.path.join("Newsletters", "Articles"),
             max_links=10,
             dry_run=False,
+            log_jsonl="",
             fetch_timeout=5,
             fetch_retries=0,
             fetch_rate_limit=0.0,
@@ -550,6 +552,7 @@ def test_process_links_dry_run_does_not_fetch(monkeypatch):
             articles_subdir=os.path.join("Newsletters", "Articles"),
             max_links=10,
             dry_run=True,
+            log_jsonl="",
             fetch_timeout=5,
             fetch_retries=0,
             fetch_rate_limit=0.0,
@@ -560,6 +563,53 @@ def test_process_links_dry_run_does_not_fetch(monkeypatch):
             ("https://example.com/a",),
         ).fetchone()
         assert row == (None, None, None)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_process_links_writes_jsonl_events(monkeypatch):
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".test_tmp"))
+    try:
+        os.makedirs(base, exist_ok=True)
+        vault = os.path.join(base, "vault")
+        db_path = os.path.join(base, "process_jsonl.db")
+        log_path = os.path.join(base, "run.jsonl")
+        conn = init_db(db_path)
+        conn.execute(
+            """
+            INSERT INTO links (url_canonical, first_seen_message_id, domain, discovered_at)
+            VALUES ('https://example.com/a', 'msg', 'example.com', 1)
+            """
+        )
+        conn.commit()
+
+        def fake_fetch_article(_url, **_kwargs):
+            return "ok", "Logged Title", "First sentence. Second sentence."
+
+        monkeypatch.setattr("newsletter.cli.fetch_article", fake_fetch_article)
+        process_links(
+            db_path=db_path,
+            vault_path=vault,
+            articles_subdir=os.path.join("Newsletters", "Articles"),
+            max_links=10,
+            dry_run=False,
+            log_jsonl=log_path,
+            fetch_timeout=5,
+            fetch_retries=0,
+            fetch_rate_limit=0.0,
+            fetch_summary_json="",
+        )
+        with open(log_path, "r", encoding="utf-8") as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        event_names = [e["event"] for e in events]
+        assert event_names[0] == "run_start"
+        assert "url_processed" in event_names
+        assert event_names[-1] == "run_summary"
+        processed = [e for e in events if e["event"] == "url_processed"][0]
+        assert processed["command"] == "process-links"
+        assert processed["url"] == "https://example.com/a"
+        assert processed["status"] == "ok"
+        assert processed["note_path"]
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
@@ -595,6 +645,7 @@ def test_refresh_links_reprocesses_old_items(monkeypatch):
             domains=None,
             categories=None,
             dry_run=False,
+            log_jsonl="",
             fetch_timeout=5,
             fetch_retries=0,
             fetch_rate_limit=0.0,
@@ -644,6 +695,7 @@ def test_refresh_links_dry_run_does_not_fetch(monkeypatch):
             domains=None,
             categories=None,
             dry_run=True,
+            log_jsonl="",
             fetch_timeout=5,
             fetch_retries=0,
             fetch_rate_limit=0.0,
