@@ -29,6 +29,7 @@
   - `python run.py backfill-redirects --db newsletter.db --max-links 200 --redirect-rate-limit 0.2`
 - Refresh old links:
   - `python run.py refresh --db newsletter.db --vault "C:\Path\To\Repo\vault" --older-than-days 30 --max-links 25`
+  - Presets: `--failed-only`, `--ok-only`, `--stale-ok`
   - Dry run: `python run.py refresh --db newsletter.db --vault "C:\Path\To\Repo\vault" --older-than-days 30 --statuses "ok,fail" --dry-run`
   - Filtered: `python run.py refresh --db newsletter.db --vault "C:\Path\To\Repo\vault" --older-than-days 30 --domains "example.com" --categories "Dev Tools"`
   - JSONL log: `python run.py refresh --db newsletter.db --vault "C:\Path\To\Repo\vault" --older-than-days 30 --log-jsonl logs\refresh.jsonl`
@@ -43,6 +44,7 @@ Done:
 - Issue note replacement of matching external links with internal Obsidian links.
 - `refresh` command to reprocess previously processed links by age/status.
 - `refresh` supports domain/category filters and dry-run mode.
+- `refresh` supports preset filters (`--failed-only`, `--ok-only`, `--stale-ok`).
 - `process-links` supports dry-run mode.
 - Structured JSONL event logging for `ingest`, `process-links`, and `refresh`.
 - Default CLI behavior runs `ingest` when no subcommand is provided.
@@ -51,9 +53,9 @@ Done:
 Pending / improvements:
 - Add retry/backoff and better failure logging for fetches (already partially done).
 - Add rate limiting for link processing (already partially done).
-- Add preset filter aliases for `refresh` (e.g., `--failed-only`, `--security-only`).
+- Add category-specific shortcut presets (e.g., `--security-only`).
 
 ## Next steps (recommended)
-1. Add preset filters for `refresh` and optionally save/load filter profiles.
+1. Add category-specific shortcuts and optionally save/load filter profiles.
 2. Strengthen fetch failure taxonomy/logging for easier troubleshooting.
 3. Add integration tests around CLI subcommands and note mutation behavior.

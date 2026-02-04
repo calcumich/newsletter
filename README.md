@@ -40,6 +40,18 @@ Refresh old processed links (optional):
 ```bash
 python run.py refresh --db newsletter.db --vault "C:\\Path\\To\\Repo\\vault" --older-than-days 30 --max-links 25
 ```
+Refresh only previously failed links:
+```bash
+python run.py refresh --db newsletter.db --vault "C:\\Path\\To\\Repo\\vault" --older-than-days 30 --failed-only
+```
+Refresh only previously successful links:
+```bash
+python run.py refresh --db newsletter.db --vault "C:\\Path\\To\\Repo\\vault" --older-than-days 30 --ok-only
+```
+Refresh stale successful links (preset):
+```bash
+python run.py refresh --db newsletter.db --vault "C:\\Path\\To\\Repo\\vault" --older-than-days 30 --stale-ok
+```
 Preview refresh candidates without changing anything:
 ```bash
 python run.py refresh --db newsletter.db --vault "C:\\Path\\To\\Repo\\vault" --older-than-days 30 --statuses "ok,fail" --dry-run

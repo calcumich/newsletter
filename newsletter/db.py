@@ -137,6 +137,7 @@ def get_links_for_refresh(
     statuses: Optional[Iterable[str]] = None,
     domains: Optional[Iterable[str]] = None,
     categories: Optional[Iterable[str]] = None,
+    status_mode: str = "any",
 ) -> list[str]:
     cutoff = int(time.time()) - max(0, older_than_days) * 86400
     query = """
@@ -146,6 +147,12 @@ def get_links_for_refresh(
           AND processed_at <= ?
     """
     params: list[object] = [cutoff]
+    if status_mode == "ok_only":
+        query += " AND fetch_status = ?"
+        params.append("ok")
+    elif status_mode == "failed_only":
+        query += " AND fetch_status IS NOT NULL AND fetch_status != ?"
+        params.append("ok")
     status_list = [s for s in (statuses or []) if s]
     if status_list:
         placeholders = ",".join(["?"] * len(status_list))

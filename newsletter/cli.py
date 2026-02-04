@@ -408,6 +408,7 @@ def refresh_links(
     statuses: Optional[list[str]],
     domains: Optional[list[str]],
     categories: Optional[list[str]],
+    status_mode: str,
     dry_run: bool,
     log_jsonl: str,
     fetch_timeout: int,
@@ -426,6 +427,7 @@ def refresh_links(
             "statuses": statuses or [],
             "domains": domains or [],
             "categories": categories or [],
+            "status_mode": status_mode,
         },
     )
     if not vault_path:
@@ -438,6 +440,7 @@ def refresh_links(
         statuses=statuses,
         domains=domains,
         categories=categories,
+        status_mode=status_mode,
     )
     if not urls:
         print("No links eligible for refresh.")
@@ -831,6 +834,22 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Optional comma-separated fetch statuses to include (e.g. ok,fail,http_403)",
     )
+    refresh_mode = refresh_parser.add_mutually_exclusive_group()
+    refresh_mode.add_argument(
+        "--failed-only",
+        action="store_true",
+        help="Only include links whose previous fetch status was not ok",
+    )
+    refresh_mode.add_argument(
+        "--ok-only",
+        action="store_true",
+        help="Only include links whose previous fetch status was ok",
+    )
+    refresh_mode.add_argument(
+        "--stale-ok",
+        action="store_true",
+        help="Shortcut for --ok-only with older-than filtering",
+    )
     refresh_parser.add_argument(
         "--domains",
         default="",
@@ -933,6 +952,13 @@ def main(beautiful_soup_available: bool) -> None:
         statuses = [s.strip() for s in args.statuses.split(",") if s.strip()]
         domains = [d.strip().lower() for d in args.domains.split(",") if d.strip()]
         categories = [c.strip() for c in args.categories.split(",") if c.strip()]
+        status_mode = "any"
+        if args.failed_only:
+            status_mode = "failed_only"
+        elif args.ok_only or args.stale_ok:
+            status_mode = "ok_only"
+        if status_mode != "any" and statuses:
+            raise SystemExit("Do not combine --statuses with --failed-only/--ok-only/--stale-ok.")
         refresh_links(
             db_path=args.db,
             vault_path=args.vault,
@@ -942,6 +968,7 @@ def main(beautiful_soup_available: bool) -> None:
             statuses=statuses or None,
             domains=domains or None,
             categories=categories or None,
+            status_mode=status_mode,
             dry_run=args.dry_run,
             log_jsonl=args.log_jsonl,
             fetch_timeout=args.fetch_timeout,

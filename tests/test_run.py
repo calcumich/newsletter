@@ -29,7 +29,7 @@ from newsletter.summarize import (
     summarize_text_stub,
 )
 from newsletter.gmail import GmailMessage
-from newsletter.cli import backfill_redirects, process_links, refresh_links
+from newsletter.cli import backfill_redirects, main, process_links, refresh_links
 
 
 def test_canonicalize_url_strips_tracking_and_normalizes():
@@ -485,6 +485,60 @@ def test_get_links_for_refresh_filters_by_domain_and_category():
     assert urls == ["https://a.com/one"]
 
 
+def test_get_links_for_refresh_status_mode_failed_only():
+    conn = init_db(":memory:")
+    old = int(time.time()) - 40 * 86400
+    conn.execute(
+        """
+        INSERT INTO links (url_canonical, first_seen_message_id, domain, discovered_at, processed_at, fetch_status)
+        VALUES ('https://example.com/ok', 'msg', 'example.com', 1, ?, 'ok')
+        """,
+        (old,),
+    )
+    conn.execute(
+        """
+        INSERT INTO links (url_canonical, first_seen_message_id, domain, discovered_at, processed_at, fetch_status)
+        VALUES ('https://example.com/fail', 'msg', 'example.com', 1, ?, 'fail')
+        """,
+        (old,),
+    )
+    conn.commit()
+    urls = get_links_for_refresh(
+        conn,
+        limit=10,
+        older_than_days=30,
+        status_mode="failed_only",
+    )
+    assert urls == ["https://example.com/fail"]
+
+
+def test_get_links_for_refresh_status_mode_ok_only():
+    conn = init_db(":memory:")
+    old = int(time.time()) - 40 * 86400
+    conn.execute(
+        """
+        INSERT INTO links (url_canonical, first_seen_message_id, domain, discovered_at, processed_at, fetch_status)
+        VALUES ('https://example.com/ok', 'msg', 'example.com', 1, ?, 'ok')
+        """,
+        (old,),
+    )
+    conn.execute(
+        """
+        INSERT INTO links (url_canonical, first_seen_message_id, domain, discovered_at, processed_at, fetch_status)
+        VALUES ('https://example.com/fail', 'msg', 'example.com', 1, ?, 'fail')
+        """,
+        (old,),
+    )
+    conn.commit()
+    urls = get_links_for_refresh(
+        conn,
+        limit=10,
+        older_than_days=30,
+        status_mode="ok_only",
+    )
+    assert urls == ["https://example.com/ok"]
+
+
 def test_process_links_writes_notes_and_updates_db(monkeypatch):
     base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".test_tmp"))
     try:
@@ -644,6 +698,7 @@ def test_refresh_links_reprocesses_old_items(monkeypatch):
             statuses=["ok"],
             domains=None,
             categories=None,
+            status_mode="any",
             dry_run=False,
             log_jsonl="",
             fetch_timeout=5,
@@ -694,6 +749,7 @@ def test_refresh_links_dry_run_does_not_fetch(monkeypatch):
             statuses=["ok"],
             domains=None,
             categories=None,
+            status_mode="any",
             dry_run=True,
             log_jsonl="",
             fetch_timeout=5,
@@ -711,6 +767,24 @@ def test_refresh_links_dry_run_does_not_fetch(monkeypatch):
         assert row[3] == old
     finally:
         shutil.rmtree(base, ignore_errors=True)
+
+
+def test_refresh_rejects_statuses_with_preset(monkeypatch):
+    monkeypatch.setattr(
+        "os.sys.argv",
+        [
+            "run.py",
+            "refresh",
+            "--statuses",
+            "ok",
+            "--failed-only",
+        ],
+    )
+    try:
+        main(beautiful_soup_available=True)
+        assert False, "Expected SystemExit"
+    except SystemExit as exc:
+        assert "Do not combine --statuses" in str(exc)
 
 
 def test_resolve_redirect_url_returns_final(monkeypatch):
