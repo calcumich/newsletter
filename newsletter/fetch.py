@@ -27,8 +27,42 @@ def fetch_article(
     retries: int = 2,
     backoff_base: float = 1.0,
 ) -> Tuple[str, Optional[str], Optional[str]]:
+    status, title, text, _meta = fetch_article_detailed(
+        url,
+        timeout=timeout,
+        retries=retries,
+        backoff_base=backoff_base,
+    )
+    return status, title, text
+
+
+def _classify_request_error(exc: requests.RequestException) -> str:
+    message = str(exc).lower()
+    if "timeout" in message or "timed out" in message:
+        return "timeout"
+    return "network"
+
+
+def _classify_http_error(status_code: int) -> str:
+    if status_code in {401, 403, 429, 451}:
+        return "blocked"
+    return "http_error"
+
+
+def fetch_article_detailed(
+    url: str,
+    *,
+    timeout: int = 15,
+    retries: int = 2,
+    backoff_base: float = 1.0,
+) -> Tuple[str, Optional[str], Optional[str], dict]:
     headers = {"User-Agent": "newsletter-ingest/0.1"}
     attempt = 0
+    meta = {
+        "error_class": None,
+        "http_status": None,
+        "retry_count": 0,
+    }
     while True:
         try:
             resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
@@ -39,7 +73,9 @@ def fetch_article(
                 time.sleep(delay)
                 attempt += 1
                 continue
-            return "fail", None, str(exc)
+            meta["error_class"] = _classify_request_error(exc)
+            meta["retry_count"] = attempt
+            return "fail", None, str(exc), meta
         if resp.status_code >= 500 and attempt < retries:
             delay = backoff_base * (2**attempt)
             print(
@@ -49,14 +85,22 @@ def fetch_article(
             attempt += 1
             continue
         if resp.status_code >= 400:
-            return f"http_{resp.status_code}", None, None
+            meta["error_class"] = _classify_http_error(resp.status_code)
+            meta["http_status"] = resp.status_code
+            meta["retry_count"] = attempt
+            return f"http_{resp.status_code}", None, None, meta
         if resp.url and resp.url != url:
             print(f"[fetch] redirect: {url} -> {resp.url}")
         content_type = resp.headers.get("content-type", "").lower()
         if "text/html" not in content_type:
-            return "non_html", None, None
+            meta["error_class"] = "non_html"
+            meta["retry_count"] = attempt
+            return "non_html", None, None, meta
         title, text_content = extract_main_text(resp.text)
-        return "ok", title, text_content
+        if not text_content:
+            meta["error_class"] = "parse_failure"
+        meta["retry_count"] = attempt
+        return "ok", title, text_content, meta
 
 
 def extract_main_text(html: str) -> Tuple[Optional[str], Optional[str]]:

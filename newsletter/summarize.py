@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 from typing import Iterable, List, Optional, Tuple
 
 import requests
@@ -16,6 +17,7 @@ CATEGORY_SET = [
     "Product/Startups",
     "Other",
 ]
+PROMPT_VERSION = "v1"
 
 
 def summarize_text_stub(text: str, max_sentences: int = 2) -> Tuple[str, List[str]]:
@@ -201,9 +203,18 @@ def summarize_text(
     domain: str,
 ) -> dict:
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    started = time.time()
     result = summarize_text_openai(text, title=title, url=url, domain=domain, model=model)
     if result:
-        return normalize_summary_output(result, fallback_text=text)
+        normalized = normalize_summary_output(result, fallback_text=text)
+        normalized["_meta"] = {
+            "llm_mode": "openai",
+            "fallback_used": False,
+            "model": model,
+            "prompt_version": PROMPT_VERSION,
+            "llm_latency_ms": int((time.time() - started) * 1000),
+        }
+        return normalized
     summary, bullets = summarize_text_stub(text)
     fallback = {
         "summary": summary,
@@ -213,4 +224,12 @@ def summarize_text(
         "confidence": 0.3,
         "paywall_or_blocked": False,
     }
-    return normalize_summary_output(fallback, fallback_text=text)
+    normalized = normalize_summary_output(fallback, fallback_text=text)
+    normalized["_meta"] = {
+        "llm_mode": "stub",
+        "fallback_used": True,
+        "model": model,
+        "prompt_version": PROMPT_VERSION,
+        "llm_latency_ms": int((time.time() - started) * 1000),
+    }
+    return normalized

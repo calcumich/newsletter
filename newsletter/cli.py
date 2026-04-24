@@ -13,7 +13,7 @@ from newsletter.db import (
     store_message,
     update_issue_note_path,
 )
-from newsletter.fetch import fetch_article
+from newsletter.fetch import fetch_article_detailed
 from newsletter.gmail import get_gmail_service, resolve_label_id, list_messages, get_message
 from newsletter.links import canonicalize_url, extract_and_store_links, resolve_redirect_url
 from newsletter.obsidian import update_issue_note_with_article_link, write_article_note, write_issue_note
@@ -153,7 +153,7 @@ def ingest(
             domain = urlsplit(url).netloc
             domain_counts[domain] = domain_counts.get(domain, 0) + 1
             print(f"[fetch] {url}")
-            status, title, text = fetch_article(
+            status, title, text, fetch_meta = fetch_article_detailed(
                 url,
                 timeout=fetch_timeout,
                 retries=fetch_retries,
@@ -173,6 +173,9 @@ def ingest(
                     "domain": domain,
                     "status": status,
                     "title": title,
+                    "error_class": fetch_meta.get("error_class"),
+                    "http_status": fetch_meta.get("http_status"),
+                    "retry_count": fetch_meta.get("retry_count"),
                 },
             )
             if fetch_rate_limit > 0:
@@ -273,7 +276,7 @@ def process_links(
         domain = urlsplit(url).netloc
         domain_counts[domain] = domain_counts.get(domain, 0) + 1
         print(f"[fetch] {url}")
-        status, title, text = fetch_article(
+        status, title, text, fetch_meta = fetch_article_detailed(
             url,
             timeout=fetch_timeout,
             retries=fetch_retries,
@@ -290,6 +293,7 @@ def process_links(
                 url=url,
                 domain=domain,
             )
+            llm_meta = summary_data.get("_meta", {})
             summary = summary_data.get("summary", "")
             bullets = summary_data.get("bullets", [])
             category = summary_data.get("category", "Other")
@@ -348,7 +352,15 @@ def process_links(
                 "domain": domain,
                 "status": status,
                 "title": title,
+                "error_class": fetch_meta.get("error_class"),
+                "http_status": fetch_meta.get("http_status"),
+                "retry_count": fetch_meta.get("retry_count"),
                 "note_path": note_path,
+                "llm_mode": llm_meta.get("llm_mode") if status == "ok" and text else None,
+                "fallback_used": llm_meta.get("fallback_used") if status == "ok" and text else None,
+                "model": llm_meta.get("model") if status == "ok" and text else None,
+                "prompt_version": llm_meta.get("prompt_version") if status == "ok" and text else None,
+                "llm_latency_ms": llm_meta.get("llm_latency_ms") if status == "ok" and text else None,
             },
         )
         if fetch_rate_limit > 0:
@@ -473,7 +485,7 @@ def refresh_links(
         domain = urlsplit(url).netloc
         domain_counts[domain] = domain_counts.get(domain, 0) + 1
         print(f"[refresh] {url}")
-        status, title, text = fetch_article(
+        status, title, text, fetch_meta = fetch_article_detailed(
             url,
             timeout=fetch_timeout,
             retries=fetch_retries,
@@ -490,6 +502,7 @@ def refresh_links(
                 url=url,
                 domain=domain,
             )
+            llm_meta = summary_data.get("_meta", {})
             summary = summary_data.get("summary", "")
             bullets = summary_data.get("bullets", [])
             category = summary_data.get("category", "Other")
@@ -548,7 +561,15 @@ def refresh_links(
                 "domain": domain,
                 "status": status,
                 "title": title,
+                "error_class": fetch_meta.get("error_class"),
+                "http_status": fetch_meta.get("http_status"),
+                "retry_count": fetch_meta.get("retry_count"),
                 "note_path": note_path,
+                "llm_mode": llm_meta.get("llm_mode") if status == "ok" and text else None,
+                "fallback_used": llm_meta.get("fallback_used") if status == "ok" and text else None,
+                "model": llm_meta.get("model") if status == "ok" and text else None,
+                "prompt_version": llm_meta.get("prompt_version") if status == "ok" and text else None,
+                "llm_latency_ms": llm_meta.get("llm_latency_ms") if status == "ok" and text else None,
             },
         )
         if fetch_rate_limit > 0:

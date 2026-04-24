@@ -112,6 +112,8 @@ When `--log-jsonl` is set, commands append one JSON object per line.
 - Common fields:
   - `timestamp`, `event`, `command`
   - URL-level events include fields like `url`, `domain`, `status`, `title`, `note_path`.
+  - Failure diagnostics on URL-level events: `error_class`, `http_status`, `retry_count`.
+  - Summarization events include `llm_mode`, `fallback_used`, `model`, `prompt_version`, `llm_latency_ms` when applicable.
 - Example:
 ```json
 {"timestamp":1738675200,"event":"url_processed","command":"process-links","url":"https://example.com/a","domain":"example.com","status":"ok","title":"Example","note_path":"C:\\vault\\Newsletters\\Articles\\Other\\2026\\Example.md"}

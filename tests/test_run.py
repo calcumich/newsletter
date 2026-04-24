@@ -21,7 +21,7 @@ from newsletter.obsidian import (
     write_article_note,
     write_issue_note,
 )
-from newsletter.fetch import extract_main_text, fetch_article
+from newsletter.fetch import extract_main_text, fetch_article, fetch_article_detailed
 from newsletter.summarize import (
     extract_output_text,
     normalize_summary_output,
@@ -322,6 +322,8 @@ def test_summarize_text_falls_back_without_key(monkeypatch):
     assert result["summary"]
     assert result["category"] == "Other"
     assert "needs-review" in result["tags"]
+    assert result["_meta"]["llm_mode"] == "stub"
+    assert result["_meta"]["fallback_used"] is True
 
 
 def test_normalize_summary_output_validates_category_and_tags():
@@ -555,9 +557,13 @@ def test_process_links_writes_notes_and_updates_db(monkeypatch):
         conn.commit()
 
         def fake_fetch_article(_url, **_kwargs):
-            return "ok", "Example Title", "First sentence. Second sentence."
+            return "ok", "Example Title", "First sentence. Second sentence.", {
+                "error_class": None,
+                "http_status": None,
+                "retry_count": 0,
+            }
 
-        monkeypatch.setattr("newsletter.cli.fetch_article", fake_fetch_article)
+        monkeypatch.setattr("newsletter.cli.fetch_article_detailed", fake_fetch_article)
         process_links(
             db_path=db_path,
             vault_path=vault,
@@ -599,7 +605,7 @@ def test_process_links_dry_run_does_not_fetch(monkeypatch):
         def fake_fetch_article(_url, **_kwargs):
             raise AssertionError("fetch_article should not be called in dry-run mode")
 
-        monkeypatch.setattr("newsletter.cli.fetch_article", fake_fetch_article)
+        monkeypatch.setattr("newsletter.cli.fetch_article_detailed", fake_fetch_article)
         process_links(
             db_path=db_path,
             vault_path="",
@@ -638,9 +644,13 @@ def test_process_links_writes_jsonl_events(monkeypatch):
         conn.commit()
 
         def fake_fetch_article(_url, **_kwargs):
-            return "ok", "Logged Title", "First sentence. Second sentence."
+            return "ok", "Logged Title", "First sentence. Second sentence.", {
+                "error_class": None,
+                "http_status": None,
+                "retry_count": 0,
+            }
 
-        monkeypatch.setattr("newsletter.cli.fetch_article", fake_fetch_article)
+        monkeypatch.setattr("newsletter.cli.fetch_article_detailed", fake_fetch_article)
         process_links(
             db_path=db_path,
             vault_path=vault,
@@ -663,7 +673,15 @@ def test_process_links_writes_jsonl_events(monkeypatch):
         assert processed["command"] == "process-links"
         assert processed["url"] == "https://example.com/a"
         assert processed["status"] == "ok"
+        assert processed["error_class"] is None
+        assert processed["http_status"] is None
+        assert processed["retry_count"] == 0
         assert processed["note_path"]
+        assert processed["llm_mode"] in {"openai", "stub"}
+        assert processed["fallback_used"] in {True, False}
+        assert processed["model"]
+        assert processed["prompt_version"]
+        assert isinstance(processed["llm_latency_ms"], int)
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
@@ -686,9 +704,13 @@ def test_refresh_links_reprocesses_old_items(monkeypatch):
         conn.commit()
 
         def fake_fetch_article(_url, **_kwargs):
-            return "ok", "Refreshed Title", "First sentence. Second sentence."
+            return "ok", "Refreshed Title", "First sentence. Second sentence.", {
+                "error_class": None,
+                "http_status": None,
+                "retry_count": 0,
+            }
 
-        monkeypatch.setattr("newsletter.cli.fetch_article", fake_fetch_article)
+        monkeypatch.setattr("newsletter.cli.fetch_article_detailed", fake_fetch_article)
         refresh_links(
             db_path=db_path,
             vault_path=vault,
@@ -739,7 +761,7 @@ def test_refresh_links_dry_run_does_not_fetch(monkeypatch):
         def fake_fetch_article(_url, **_kwargs):
             raise AssertionError("fetch_article should not be called in dry-run mode")
 
-        monkeypatch.setattr("newsletter.cli.fetch_article", fake_fetch_article)
+        monkeypatch.setattr("newsletter.cli.fetch_article_detailed", fake_fetch_article)
         refresh_links(
             db_path=db_path,
             vault_path=vault,
@@ -868,3 +890,30 @@ def test_fetch_article_retries_then_succeeds(monkeypatch):
     assert status == "ok"
     assert title == "Ok"
     assert "Hi" in (text or "")
+
+
+def test_fetch_article_detailed_http_error_metadata(monkeypatch):
+    class FakeResponse:
+        status_code = 403
+        headers = {"content-type": "text/html; charset=utf-8"}
+        text = "<html></html>"
+        url = "https://example.com/blocked"
+
+    def fake_get(_url, **_kwargs):
+        return FakeResponse()
+
+    import requests
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    status, title, text, meta = fetch_article_detailed(
+        "https://example.com/blocked",
+        timeout=1,
+        retries=0,
+        backoff_base=0,
+    )
+    assert status == "http_403"
+    assert title is None
+    assert text is None
+    assert meta["error_class"] == "blocked"
+    assert meta["http_status"] == 403
+    assert meta["retry_count"] == 0
