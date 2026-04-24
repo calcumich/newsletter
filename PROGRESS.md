@@ -50,13 +50,15 @@ Done:
 - Summarizer evaluation scaffold (`eval/fixtures.jsonl`, `observability/eval_summarizer.py`).
 - Default CLI behavior runs `ingest` when no subcommand is provided.
 - Redirect resolution for canonical URLs (optional via `--resolve-redirects`).
+- Milestone B: fetch failure taxonomy + LLM run metadata on `url_processed` events (`error_class`, `http_status`, `retry_count`, `llm_mode`, `fallback_used`, `model`, `prompt_version`, `llm_latency_ms`).
+- Milestone D: observability utilities (`observability/logs.py`, `observability/log_stats.py`, `python -m observability.log_report`) plus JSONL analysis section in the notebook.
 
 Pending / improvements:
-- Add retry/backoff and better failure logging for fetches (already partially done).
 - Add rate limiting for link processing (already partially done).
-- Add category-specific shortcut presets (e.g., `--security-only`).
+- Add category-specific shortcut presets (e.g., `--security-only`). [Milestone A]
+- CLI integration safety net. [Milestone C]
 
 ## Next steps (recommended)
-1. Add category-specific shortcuts and optionally save/load filter profiles.
-2. Strengthen fetch failure taxonomy/logging for easier troubleshooting.
-3. Add integration tests around CLI subcommands and note mutation behavior.
+1. Milestone A: Add category-specific shortcuts and optionally save/load filter profiles.
+2. Milestone C: Add integration-style tests for CLI parsing and dispatch.
+3. Milestone E: LLM summarization productionization (prompt/model versioning is already wired through metadata — next is quality guardrails and cost/latency controls).

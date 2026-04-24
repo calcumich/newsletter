@@ -30,6 +30,16 @@ from newsletter.summarize import (
 )
 from newsletter.gmail import GmailMessage
 from newsletter.cli import backfill_redirects, main, process_links, refresh_links
+from observability.log_report import main as log_report_main, run as log_report_run
+from observability.logs import filter_events, load_events
+from observability.log_stats import (
+    error_class_breakdown,
+    latency_summary,
+    llm_mode_breakdown,
+    success_rate,
+    top_failing_domains,
+    trend_by_day,
+)
 
 
 def test_canonicalize_url_strips_tracking_and_normalizes():
@@ -917,3 +927,248 @@ def test_fetch_article_detailed_http_error_metadata(monkeypatch):
     assert meta["error_class"] == "blocked"
     assert meta["http_status"] == 403
     assert meta["retry_count"] == 0
+
+
+def test_load_events_reads_jsonl_and_tolerates_malformed_lines():
+    base = os.path.join(".test_tmp", f"logs_load_{int(time.time() * 1000)}")
+    os.makedirs(base, exist_ok=True)
+    try:
+        path = os.path.join(base, "run.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"event": "run_start", "command": "process-links"}) + "\n")
+            f.write("\n")
+            f.write("not json\n")
+            f.write(json.dumps(["not", "a", "dict"]) + "\n")
+            f.write(json.dumps({"event": "url_processed", "status": "ok"}) + "\n")
+        events = load_events([path])
+        assert len(events) == 2
+        assert events[0]["event"] == "run_start"
+        assert events[1]["event"] == "url_processed"
+        assert all(ev["_source_file"] == path for ev in events)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_load_events_expands_globs_and_missing_paths():
+    base = os.path.join(".test_tmp", f"logs_glob_{int(time.time() * 1000)}")
+    os.makedirs(base, exist_ok=True)
+    try:
+        for name in ("a.jsonl", "b.jsonl"):
+            with open(os.path.join(base, name), "w", encoding="utf-8") as f:
+                f.write(json.dumps({"event": "url_processed", "file": name}) + "\n")
+        events = load_events([os.path.join(base, "*.jsonl"), os.path.join(base, "missing.jsonl")])
+        files = sorted(ev["file"] for ev in events)
+        assert files == ["a.jsonl", "b.jsonl"]
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_filter_events_by_since_days_command_and_event():
+    now = 1_800_000_000.0
+    one_day = 86400
+    events = [
+        {"event": "url_processed", "command": "process-links", "timestamp": now - 2 * one_day, "url": "fresh"},
+        {"event": "url_processed", "command": "process-links", "timestamp": now - 10 * one_day, "url": "old"},
+        {"event": "run_start", "command": "process-links", "timestamp": now - 1 * one_day},
+        {"event": "url_processed", "command": "refresh", "timestamp": now - 1 * one_day, "url": "other_cmd"},
+        {"event": "url_processed", "command": "process-links", "url": "no_timestamp"},
+    ]
+
+    recent = filter_events(events, since_days=7, now=now)
+    assert {ev.get("url") for ev in recent if "url" in ev} == {"fresh", "other_cmd"}
+    assert any(ev["event"] == "run_start" for ev in recent)
+
+    only_process = filter_events(events, command="process-links")
+    assert all(ev["command"] == "process-links" for ev in only_process)
+    assert len(only_process) == 4
+
+    only_url = filter_events(events, event="url_processed")
+    assert all(ev["event"] == "url_processed" for ev in only_url)
+    assert len(only_url) == 4
+
+    combined = filter_events(events, since_days=7, command="process-links", event="url_processed", now=now)
+    assert [ev["url"] for ev in combined] == ["fresh"]
+
+
+def _make_url_event(**overrides) -> dict:
+    base = {
+        "event": "url_processed",
+        "command": "process-links",
+        "status": "ok",
+        "domain": "example.com",
+        "timestamp": 1_800_000_000,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_success_rate_handles_empty_and_mixed():
+    assert success_rate([]) == {
+        "total": 0,
+        "ok": 0,
+        "fail": 0,
+        "success_rate": 0.0,
+        "by_command": {},
+    }
+    events = [
+        _make_url_event(status="ok"),
+        _make_url_event(status="ok"),
+        _make_url_event(status="fail", command="refresh"),
+        _make_url_event(status="http_403"),
+        {"event": "run_start", "command": "process-links"},  # ignored
+    ]
+    result = success_rate(events)
+    assert result["total"] == 4
+    assert result["ok"] == 2
+    assert result["fail"] == 2
+    assert result["success_rate"] == 0.5
+    assert result["by_command"]["process-links"]["total"] == 3
+    assert result["by_command"]["process-links"]["ok"] == 2
+    assert result["by_command"]["refresh"]["fail"] == 1
+
+
+def test_error_class_breakdown_sorts_and_handles_missing():
+    events = [
+        _make_url_event(status="ok"),
+        _make_url_event(status="http_403", error_class="blocked"),
+        _make_url_event(status="http_403", error_class="blocked"),
+        _make_url_event(status="fail", error_class="timeout"),
+        _make_url_event(status="fail"),  # missing error_class
+    ]
+    rows = error_class_breakdown(events)
+    assert rows[0]["error_class"] == "blocked"
+    assert rows[0]["count"] == 2
+    assert rows[0]["pct_of_failures"] == 0.5
+    classes = {r["error_class"] for r in rows}
+    assert "unknown" in classes
+    assert "timeout" in classes
+
+
+def test_top_failing_domains_excludes_clean_domains_and_limits():
+    events = [
+        _make_url_event(domain="a.com", status="ok"),
+        _make_url_event(domain="a.com", status="ok"),
+        _make_url_event(domain="b.com", status="fail", error_class="timeout"),
+        _make_url_event(domain="b.com", status="fail", error_class="timeout"),
+        _make_url_event(domain="b.com", status="fail", error_class="network"),
+        _make_url_event(domain="c.com", status="http_403", error_class="blocked"),
+    ]
+    rows = top_failing_domains(events, n=10)
+    domains = [r["domain"] for r in rows]
+    assert "a.com" not in domains  # no failures
+    assert domains[0] == "b.com"
+    assert rows[0]["dominant_error_class"] == "timeout"
+    assert rows[0]["fails"] == 3
+    assert rows[0]["fail_rate"] == 1.0
+    assert top_failing_domains(events, n=1)[0]["domain"] == "b.com"
+
+
+def test_llm_mode_breakdown_tracks_fallback_and_prompt_version():
+    events = [
+        _make_url_event(status="ok", llm_mode="openai", fallback_used=False, prompt_version="v1"),
+        _make_url_event(status="ok", llm_mode="openai", fallback_used=False, prompt_version="v1"),
+        _make_url_event(status="ok", llm_mode="stub", fallback_used=True, prompt_version="v1"),
+        _make_url_event(status="ok"),  # missing llm fields — pre-Milestone-B
+        _make_url_event(status="fail", llm_mode="openai"),  # failures ignored
+    ]
+    result = llm_mode_breakdown(events)
+    assert result["total"] == 4
+    assert result["by_mode"]["openai"] == 2
+    assert result["by_mode"]["stub"] == 1
+    assert result["by_mode"]["unknown"] == 1
+    assert result["fallback_used"] == 1
+    assert result["by_prompt_version"]["v1"]["openai"] == 2
+    assert "unknown" in result["by_prompt_version"]
+
+
+def test_latency_summary_percentiles():
+    events = [
+        _make_url_event(llm_latency_ms=100, model="gpt-4o-mini", prompt_version="v1"),
+        _make_url_event(llm_latency_ms=200, model="gpt-4o-mini", prompt_version="v1"),
+        _make_url_event(llm_latency_ms=300, model="gpt-4o-mini", prompt_version="v1"),
+        _make_url_event(llm_latency_ms=400, model="gpt-4o-mini", prompt_version="v1"),
+        _make_url_event(llm_latency_ms=500, model="gpt-4o-mini", prompt_version="v1"),
+        _make_url_event(),  # no latency — ignored
+    ]
+    rows = latency_summary(events)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["count"] == 5
+    assert row["p50"] == 300
+    assert row["p95"] == 480
+    assert row["p99"] == 496
+
+
+def test_trend_by_day_buckets_by_utc_date():
+    day1 = 1_800_000_000  # UTC date X
+    day2 = day1 + 86400
+    events = [
+        _make_url_event(timestamp=day1, status="ok"),
+        _make_url_event(timestamp=day1, status="fail"),
+        _make_url_event(timestamp=day2, status="ok"),
+        _make_url_event(timestamp=None, status="ok"),  # no timestamp, dropped
+    ]
+    rows = trend_by_day(events)
+    assert len(rows) == 2
+    assert rows[0]["date"] < rows[1]["date"]
+    assert rows[0]["processed"] == 2
+    assert rows[0]["ok"] == 1
+    assert rows[0]["fail"] == 1
+    assert rows[0]["fail_rate"] == 0.5
+    assert rows[1]["processed"] == 1
+
+
+def test_log_report_run_produces_text_sections(capsys):
+    base = os.path.join(".test_tmp", f"report_{int(time.time() * 1000)}")
+    os.makedirs(base, exist_ok=True)
+    try:
+        path = os.path.join(base, "run.jsonl")
+        events = [
+            {"event": "run_start", "command": "process-links", "timestamp": 1_800_000_000},
+            {
+                "event": "url_processed",
+                "command": "process-links",
+                "status": "ok",
+                "domain": "ok.com",
+                "timestamp": 1_800_000_000,
+                "llm_mode": "openai",
+                "fallback_used": False,
+                "model": "gpt-4o-mini",
+                "prompt_version": "v1",
+                "llm_latency_ms": 250,
+            },
+            {
+                "event": "url_processed",
+                "command": "process-links",
+                "status": "http_403",
+                "error_class": "blocked",
+                "http_status": 403,
+                "domain": "bad.com",
+                "timestamp": 1_800_000_000,
+            },
+        ]
+        with open(path, "w", encoding="utf-8") as f:
+            for ev in events:
+                f.write(json.dumps(ev) + "\n")
+
+        text = log_report_run([path])
+        assert "Success rate" in text
+        assert "Error classes" in text
+        assert "blocked" in text
+        assert "bad.com" in text
+        assert "Top failing domains" in text
+        assert "LLM mode" in text
+        assert "gpt-4o-mini" in text
+        assert "Daily trend" in text
+
+        payload = log_report_run([path], as_json=True)
+        parsed = json.loads(payload)
+        assert parsed["success_rate"]["total"] == 2
+        assert parsed["top_failing_domains"][0]["domain"] == "bad.com"
+
+        rc = log_report_main(["--logs", path])
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "Success rate" in captured.out
+    finally:
+        shutil.rmtree(base, ignore_errors=True)

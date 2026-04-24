@@ -119,6 +119,21 @@ When `--log-jsonl` is set, commands append one JSON object per line.
 {"timestamp":1738675200,"event":"url_processed","command":"process-links","url":"https://example.com/a","domain":"example.com","status":"ok","title":"Example","note_path":"C:\\vault\\Newsletters\\Articles\\Other\\2026\\Example.md"}
 ```
 
+## Log report
+
+Summarize one or more JSONL run logs — success rate, top failing domains, LLM mode mix, latency percentiles, and daily trend.
+
+```bash
+python -m observability.log_report --logs "logs/*.jsonl" --since-days 7
+python -m observability.log_report --logs logs/process.jsonl --command process-links --top-domains 20
+python -m observability.log_report --logs "logs/*.jsonl" --json > report.json
+```
+
+Answers "what broke this week?" without launching a notebook. The same
+aggregations (`observability.log_stats`) are reused in the companion notebook
+`observability/observability_examples.ipynb` for exploratory analysis and
+charts.
+
 ## Tests
 
 Install deps:
