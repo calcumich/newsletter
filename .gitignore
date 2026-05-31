@@ -1,6 +1,14 @@
 credentials.json
 token.json
+.env
+.env.*
 *.db
+*.sqlite
+*.sqlite3
 .test_tmp
 *.pyc
+__pycache__/
+.pytest_cache/
+.claude/
+newsletter_codemap.html
 vault/
