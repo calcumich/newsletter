@@ -1,6 +1,20 @@
 # Newsletter Pipeline
 
-Minimal Gmail ingestion pipeline that extracts newsletter links and (optionally) fetches article pages.
+Gmail ingestion pipeline that extracts newsletter links and (optionally) fetches article pages.
+
+## Background Problem
+
+I found that I subscribed to a number of tech newsletters (e.g. TLDR, MarksTechPost).  Individually they were great, but as a whole they are just overwhelming.  Oftentimes links get re-used between newsletters, and packaged slightly differently depending on the audience.  If you actually want to read the articles you can spend hours each day just trying to figure out what other people are doing.
+
+## Goal
+
+Create a pipeline that pulls from Gmail, where I have a "Tech Newsletters" label.  De-duplicate links between newsletters, and add minimal persistence so that if you re-run the pipeline you don't see links added twice. 
+
+Feed the cleaned article to a cheap LLM, get a summary and tags categorizing it.  Store simple entries in an Obsidian vault in an organized fashion.  
+
+## Future Ideas
+
+Down the road, I'd like to add some rebalancing to re-consider the broad themes, but I haven't dug into that, and nowadays it seems like throwing an Agent at the task might offer the same benefits. I'd also like to add in some rating for personal preferences (e.g. "this topic is of particular interest for me"), but I haven't thought through that thoroughly.
 
 ## Quickstart
 
